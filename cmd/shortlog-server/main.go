@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -21,9 +23,13 @@ func main() {
 }
 
 func run() error {
+	if err := loadLocalEnv(".env"); err != nil {
+		return err
+	}
+
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		return errors.New("DATABASE_URL is required")
+		return errors.New("DATABASE_URL is required (set it in the environment or create a local .env file)")
 	}
 
 	address := os.Getenv("HTTP_ADDR")
@@ -69,4 +75,25 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+func loadLocalEnv(path string) error {
+	if os.Getenv("DATABASE_URL") != "" || os.Getenv("APP_ENV") == "production" {
+		return nil
+	}
+	values, err := godotenv.Read(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load local environment file: %w", err)
+	}
+	for key, value := range values {
+		if os.Getenv(key) == "" {
+			if err := os.Setenv(key, value); err != nil {
+				return fmt.Errorf("set local environment variable %s: %w", key, err)
+			}
+		}
+	}
+	return nil
 }

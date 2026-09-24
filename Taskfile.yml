@@ -1,0 +1,38 @@
+version: '3'
+
+tasks:
+  dev:
+    desc: Run the API with the local environment
+    preconditions:
+      - sh: test -f .env
+        msg: Copy .env.example to .env first
+    cmds:
+      - go run ./cmd/shortlog-server
+
+  db:migrate:
+    desc: Apply local PostgreSQL migrations
+    dotenv: ['.env']
+    preconditions:
+      - sh: test -f .env
+        msg: Copy .env.example to .env first
+    cmds:
+      - goose -dir db/migrations postgres "$DATABASE_URL" up
+
+  db:status:
+    desc: Show local PostgreSQL migration status
+    dotenv: ['.env']
+    preconditions:
+      - sh: test -f .env
+        msg: Copy .env.example to .env first
+    cmds:
+      - goose -dir db/migrations postgres "$DATABASE_URL" status
+
+  generate:
+    desc: Generate typed database queries
+    cmds:
+      - sqlc generate
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...

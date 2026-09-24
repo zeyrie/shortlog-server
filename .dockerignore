@@ -1,0 +1,6 @@
+.env
+.env.*
+.git
+.idea
+.run
+bin
