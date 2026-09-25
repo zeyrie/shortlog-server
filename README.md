@@ -51,10 +51,12 @@ Use GoLand's **Debug** action; no program arguments are needed. A supplied `DATA
 
 Run tests with `task test`. Migrations run as an explicit step; the API does not run them on startup.
 
+To start over during early development, run `task db:reset`. After confirmation it drops and recreates **only** the local `shortlog` database in the `shortlog-postgres` Apple container, then reapplies all migrations. It disconnects active database clients and deletes local application data, but keeps the container and named volume. The task refuses to run if `DATABASE_URL` is not the known local development URL. Do not run it against a database whose contents you need to keep.
+
 ## Production environment
 
 Set `APP_ENV=production`, `DATABASE_URL`, and `HTTP_ADDR=:8080` in Dokploy's environment/secret settings. Production does not use an env file. `APP_ENV=production` disables local `.env` loading; `.dockerignore` also excludes env files from container build contexts. Keep PostgreSQL credentials out of Git and do not reuse the local development password. TLS termination and production database access still need to be configured.
 
 ## Scope
 
-This is the entry-point skeleton: connection setup, health endpoints, an initial accounts migration, and sqlc configuration. Authentication, Inbox, notes, and production deployment are not implemented yet. Production credentials, TLS, and off-server PostgreSQL backups must be configured before deployment.
+This is the entry-point skeleton: connection setup, health endpoints, account/authentication tables, and sqlc configuration. Authentication flows, Inbox, notes, and production deployment are not implemented yet. The Telegram PKCE verifier column expects application-encrypted data; do not store a plaintext verifier. Production credentials, TLS, and off-server PostgreSQL backups must be configured before deployment.

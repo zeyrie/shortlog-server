@@ -18,6 +18,20 @@ tasks:
     cmds:
       - goose -dir db/migrations postgres "$DATABASE_URL" up
 
+  db:reset:
+    desc: Recreate only the local shortlog database and reapply migrations (deletes its data)
+    dotenv: ['.env']
+    prompt: This will permanently delete all data in the LOCAL shortlog database and disconnect its clients. Continue?
+    preconditions:
+      - sh: test -f .env
+        msg: Copy .env.example to .env first
+      - sh: test "$DATABASE_URL" = 'postgres://shortlog:shortlog_dev@127.0.0.1:5432/shortlog?sslmode=disable'
+        msg: db:reset only supports the local Apple-container database configured in .env.example
+    cmds:
+      - container exec shortlog-postgres dropdb --force --if-exists -U shortlog shortlog
+      - container exec shortlog-postgres createdb -U shortlog shortlog
+      - goose -dir db/migrations postgres "$DATABASE_URL" up
+
   db:status:
     desc: Show local PostgreSQL migration status
     dotenv: ['.env']

@@ -9,7 +9,59 @@ import (
 )
 
 type Account struct {
+	ID                  pgtype.UUID
+	Username            pgtype.Text
+	TimeZone            string
+	CreatedAt           pgtype.Timestamptz
+	DeletionRequestedAt pgtype.Timestamptz
+}
+
+type EmailLoginChallenge struct {
+	ID                   pgtype.UUID
+	Email                string
+	Purpose              string
+	InitiatedBySessionID pgtype.UUID
+	CodeMac              []byte
+	AttemptCount         int16
+	CreatedAt            pgtype.Timestamptz
+	ExpiresAt            pgtype.Timestamptz
+	SentAt               pgtype.Timestamptz
+	VerifiedAt           pgtype.Timestamptz
+	CompletionTokenHash  []byte
+	CompletedAt          pgtype.Timestamptz
+}
+
+type LoginIdentity struct {
 	ID        pgtype.UUID
-	TimeZone  string
-	CreatedAt pgtype.Timestamptz
+	AccountID pgtype.UUID
+	Provider  string
+	Subject   string
+	LinkedAt  pgtype.Timestamptz
+}
+
+type Session struct {
+	ID              pgtype.UUID
+	AccountID       pgtype.UUID
+	TokenHash       []byte
+	UserAgent       string
+	DeviceLabel     string
+	CreatedAt       pgtype.Timestamptz
+	LastUsedAt      pgtype.Timestamptz
+	AuthenticatedAt pgtype.Timestamptz
+	RevokedAt       pgtype.Timestamptz
+}
+
+type TelegramLoginAttempt struct {
+	ID                     pgtype.UUID
+	StateHash              []byte
+	PkceVerifierCiphertext []byte
+	Nonce                  string
+	PollSecretHash         []byte
+	Purpose                string
+	InitiatedBySessionID   pgtype.UUID
+	TelegramSubject        pgtype.Text
+	CreatedAt              pgtype.Timestamptz
+	ExpiresAt              pgtype.Timestamptz
+	ApprovedAt             pgtype.Timestamptz
+	CompletedAt            pgtype.Timestamptz
 }

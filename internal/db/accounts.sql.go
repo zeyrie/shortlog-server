@@ -13,18 +13,24 @@ import (
 
 const createAccount = `-- name: CreateAccount :one
 INSERT INTO accounts DEFAULT VALUES
-RETURNING id, time_zone, created_at
+RETURNING id, username, time_zone, created_at, deletion_requested_at
 `
 
 func (q *Queries) CreateAccount(ctx context.Context) (Account, error) {
 	row := q.db.QueryRow(ctx, createAccount)
 	var i Account
-	err := row.Scan(&i.ID, &i.TimeZone, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.TimeZone,
+		&i.CreatedAt,
+		&i.DeletionRequestedAt,
+	)
 	return i, err
 }
 
 const getAccount = `-- name: GetAccount :one
-SELECT id, time_zone, created_at
+SELECT id, username, time_zone, created_at, deletion_requested_at
 FROM accounts
 WHERE id = $1
 `
@@ -32,6 +38,12 @@ WHERE id = $1
 func (q *Queries) GetAccount(ctx context.Context, id pgtype.UUID) (Account, error) {
 	row := q.db.QueryRow(ctx, getAccount, id)
 	var i Account
-	err := row.Scan(&i.ID, &i.TimeZone, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.TimeZone,
+		&i.CreatedAt,
+		&i.DeletionRequestedAt,
+	)
 	return i, err
 }
