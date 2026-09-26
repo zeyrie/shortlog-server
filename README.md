@@ -51,6 +51,8 @@ Use GoLand's **Debug** action; no program arguments are needed. A supplied `DATA
 
 Run tests with `task test`. Migrations run as an explicit step; the API does not run them on startup.
 
+Run `task test:db` for database-backed authentication and HTTP tests. It uses only the known local PostgreSQL URL; tests create their own accounts and remove them afterward.
+
 To start over during early development, run `task db:reset`. After confirmation it drops and recreates **only** the local `shortlog` database in the `shortlog-postgres` Apple container, then reapplies all migrations. It disconnects active database clients and deletes local application data, but keeps the container and named volume. The task refuses to run if `DATABASE_URL` is not the known local development URL. Do not run it against a database whose contents you need to keep.
 
 ## Production environment
@@ -59,4 +61,8 @@ Set `APP_ENV=production`, `DATABASE_URL`, and `HTTP_ADDR=:8080` in Dokploy's env
 
 ## Scope
 
-This is the entry-point skeleton: connection setup, health endpoints, account/authentication tables, and sqlc configuration. Authentication flows, Inbox, notes, and production deployment are not implemented yet. The Telegram PKCE verifier column expects application-encrypted data; do not store a plaintext verifier. Production credentials, TLS, and off-server PostgreSQL backups must be configured before deployment.
+The API has `/healthz`, `/readyz`, and four bearer-protected routes: `GET /v1/me`, `GET /v1/sessions`, `DELETE /v1/sessions/{id}`, and `POST /v1/sessions/revoke-all`. Sessions use opaque tokens, stored only as hashes in PostgreSQL. Activity is persisted at most once per 24 hours; a session expires 31 days after that persisted activity, so it stays valid at least 30 days and at most about 31 days after its actual last use. The device list's last-used time can lag by up to a day. Account/identity resolution and session issuance are internal services; **there is no public sign-in route yet**. Email OTP, Telegram OIDC, Inbox, notes, and production deployment are not implemented. The Telegram PKCE verifier column expects application-encrypted data; do not store a plaintext verifier. Production credentials, TLS, and off-server PostgreSQL backups must be configured before deployment.
+
+API errors use a stable JSON envelope, for example `{"error":{"code":"unauthorized","message":"Authentication required."}}`. Clients should branch on `code` and HTTP status, not message text. Shared codes and safe messages live in `internal/apierror`; internal database or server details stay in logs. A 401 includes `WWW-Authenticate`, and a 405 includes `Allow`.
+
+The current protected routes have a 10-second request deadline; the server also limits header reading to 5 seconds, request reading to 10 seconds, responses to 30 seconds, and idle connections to 60 seconds. Future long-polling endpoints must explicitly choose compatible deadlines. The verified-login trust-boundary requirements are recorded in `internal/auth/doc.go` before OTP or OIDC routes are added.

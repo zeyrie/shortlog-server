@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"shortlog-server/internal/auth"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
@@ -54,8 +56,11 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              address,
-		Handler:           newHandler(pool),
+		Handler:           newHandler(pool, auth.New(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	result := make(chan error, 1)
