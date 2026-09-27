@@ -85,7 +85,7 @@ func TestEmailLoginPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstPrincipal.Username.String != "Ari" || firstPrincipal.TimeZone != "Asia/Kolkata" {
+	if firstPrincipal.Username != "Ari" || firstPrincipal.TimeZone != "Asia/Kolkata" {
 		t.Fatalf("new account profile = %+v", firstPrincipal)
 	}
 	oldToken := result.Token

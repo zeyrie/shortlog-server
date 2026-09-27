@@ -45,23 +45,6 @@ func (q *Queries) ConsumeRecoveryTicket(ctx context.Context, arg ConsumeRecovery
 	return result.RowsAffected(), nil
 }
 
-const countEmailRequests = `-- name: CountEmailRequests :one
-INSERT INTO email_login_limits (key) VALUES ($1)
-ON CONFLICT (key) DO UPDATE SET
-    request_count = CASE WHEN email_login_limits.window_start <= now() - interval '1 hour'
-                         THEN 1 ELSE email_login_limits.request_count + 1 END,
-    window_start = CASE WHEN email_login_limits.window_start <= now() - interval '1 hour'
-                        THEN now() ELSE email_login_limits.window_start END
-RETURNING request_count
-`
-
-func (q *Queries) CountEmailRequests(ctx context.Context, key []byte) (int32, error) {
-	row := q.db.QueryRow(ctx, countEmailRequests, key)
-	var request_count int32
-	err := row.Scan(&request_count)
-	return request_count, err
-}
-
 const createEmailChallenge = `-- name: CreateEmailChallenge :one
 INSERT INTO email_login_challenges (id, email, purpose, code_mac, expires_at)
 VALUES ($1, $2, 'sign_in', $3, now() + interval '10 minutes')
@@ -145,15 +128,6 @@ func (q *Queries) LockRecoveryTicket(ctx context.Context, completionTokenHash []
 	var i LockRecoveryTicketRow
 	err := row.Scan(&i.ID, &i.Email)
 	return i, err
-}
-
-const pruneEmailLoginLimits = `-- name: PruneEmailLoginLimits :exec
-DELETE FROM email_login_limits WHERE window_start < now() - interval '2 hours'
-`
-
-func (q *Queries) PruneEmailLoginLimits(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, pruneEmailLoginLimits)
-	return err
 }
 
 const restoreEmailAccount = `-- name: RestoreEmailAccount :one

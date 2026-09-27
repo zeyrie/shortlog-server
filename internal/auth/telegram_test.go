@@ -183,7 +183,7 @@ func TestTelegramLoginPostgres(t *testing.T) {
 		t.Fatalf("first sign-in: %+v, %v", result, err)
 	}
 	principal, err := svc.Authenticate(ctx, result.Token)
-	if err != nil || principal.Username.String != "Telegram user" {
+	if err != nil || principal.Username != "Telegram user" {
 		t.Fatalf("principal: %+v, %v", principal, err)
 	}
 	if _, err := login.Poll(ctx, first.AttemptID, first.PollSecret, "test", nil); err != ErrInvalidChallenge {

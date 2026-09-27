@@ -124,7 +124,7 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	svc := auth.New(pool)
-	account, err := db.New(pool).CreateAccount(ctx)
+	account, err := db.New(pool).CreateAccount(ctx, db.CreateAccountParams{Username: "Test account", TimeZone: "UTC"})
 	if err != nil {
 		t.Fatal(err)
 	}

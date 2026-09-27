@@ -12,35 +12,17 @@ import (
 )
 
 const createAccount = `-- name: CreateAccount :one
-INSERT INTO accounts DEFAULT VALUES
-RETURNING id, username, time_zone, created_at, deletion_requested_at
-`
-
-func (q *Queries) CreateAccount(ctx context.Context) (Account, error) {
-	row := q.db.QueryRow(ctx, createAccount)
-	var i Account
-	err := row.Scan(
-		&i.ID,
-		&i.Username,
-		&i.TimeZone,
-		&i.CreatedAt,
-		&i.DeletionRequestedAt,
-	)
-	return i, err
-}
-
-const createAccountWithProfile = `-- name: CreateAccountWithProfile :one
 INSERT INTO accounts (username, time_zone) VALUES ($1, $2)
 RETURNING id, username, time_zone, created_at, deletion_requested_at
 `
 
-type CreateAccountWithProfileParams struct {
-	Username pgtype.Text
+type CreateAccountParams struct {
+	Username string
 	TimeZone string
 }
 
-func (q *Queries) CreateAccountWithProfile(ctx context.Context, arg CreateAccountWithProfileParams) (Account, error) {
-	row := q.db.QueryRow(ctx, createAccountWithProfile, arg.Username, arg.TimeZone)
+func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error) {
+	row := q.db.QueryRow(ctx, createAccount, arg.Username, arg.TimeZone)
 	var i Account
 	err := row.Scan(
 		&i.ID,
@@ -79,7 +61,7 @@ RETURNING id, username, time_zone, created_at, deletion_requested_at
 
 type UpdateAccountProfileParams struct {
 	ID       pgtype.UUID
-	Username pgtype.Text
+	Username string
 	TimeZone string
 }
 

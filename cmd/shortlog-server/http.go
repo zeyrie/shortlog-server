@@ -369,14 +369,10 @@ func newHandler(db databasePinger, sessions sessionManager, email emailLogin, te
 				serverError(w, r, err)
 				return
 			}
-			writeMe(w, account.ID, &account.Username.String, account.TimeZone, account.CreatedAt.Time)
+			writeMe(w, account.ID, account.Username, account.TimeZone, account.CreatedAt.Time)
 			return
 		}
-		var username *string
-		if p.Username.Valid {
-			username = &p.Username.String
-		}
-		writeMe(w, p.AccountID, username, p.TimeZone, p.AccountCreated.Time)
+		writeMe(w, p.AccountID, p.Username, p.TimeZone, p.AccountCreated.Time)
 	}), http.MethodGet, http.MethodPatch))
 
 	mux.HandleFunc("/v1/sessions", onlyMethod(http.MethodGet, withSession(sessions, func(w http.ResponseWriter, r *http.Request, p auth.Principal) {
@@ -486,10 +482,10 @@ func onlyMethods(next http.HandlerFunc, methods ...string) http.HandlerFunc {
 	}
 }
 
-func writeMe(w http.ResponseWriter, id pgtype.UUID, username *string, timeZone string, createdAt time.Time) {
+func writeMe(w http.ResponseWriter, id pgtype.UUID, username string, timeZone string, createdAt time.Time) {
 	writeJSON(w, http.StatusOK, struct {
 		ID        string    `json:"id"`
-		Username  *string   `json:"username"`
+		Username  string    `json:"username"`
 		TimeZone  string    `json:"time_zone"`
 		CreatedAt time.Time `json:"created_at"`
 	}{id.String(), username, timeZone, createdAt})

@@ -65,7 +65,7 @@ func (s *EmailLogin) Start(ctx context.Context, address, remoteIP string) (pgtyp
 		return pgtype.UUID{}, ErrEmailUnavailable
 	}
 
-	if err := s.service.queries.PruneEmailLoginLimits(ctx); err != nil {
+	if err := s.service.queries.PruneAuthLimits(ctx); err != nil {
 		return pgtype.UUID{}, err
 	}
 
@@ -76,7 +76,7 @@ func (s *EmailLogin) Start(ctx context.Context, address, remoteIP string) (pgtyp
 	}{
 		{s.mac("email", email), 5}, {s.mac("ip", remoteIP), 20},
 	} {
-		count, err := s.service.queries.CountEmailRequests(ctx, limit.key)
+		count, err := s.service.queries.CountAuthRequests(ctx, limit.key)
 
 		if err != nil {
 			return pgtype.UUID{}, err

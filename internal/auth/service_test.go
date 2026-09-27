@@ -16,6 +16,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func TestAccountRequiresProfilePostgres(t *testing.T) {
+	url := os.Getenv("SHORTLOG_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set SHORTLOG_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if _, err := pool.Exec(ctx, "INSERT INTO accounts (time_zone) VALUES ('UTC')"); err == nil {
+		t.Fatal("database accepted an account without a username")
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO accounts (username) VALUES ('missing zone')"); err == nil {
+		t.Fatal("database accepted an account without a time zone")
+	}
+}
+
 func TestValidateNewAccountProfile(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

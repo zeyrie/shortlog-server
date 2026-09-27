@@ -1,15 +1,3 @@
--- name: CountEmailRequests :one
-INSERT INTO email_login_limits (key) VALUES ($1)
-ON CONFLICT (key) DO UPDATE SET
-    request_count = CASE WHEN email_login_limits.window_start <= now() - interval '1 hour'
-                         THEN 1 ELSE email_login_limits.request_count + 1 END,
-    window_start = CASE WHEN email_login_limits.window_start <= now() - interval '1 hour'
-                        THEN now() ELSE email_login_limits.window_start END
-RETURNING request_count;
-
--- name: PruneEmailLoginLimits :exec
-DELETE FROM email_login_limits WHERE window_start < now() - interval '2 hours';
-
 -- name: CreateEmailChallenge :one
 INSERT INTO email_login_challenges (id, email, purpose, code_mac, expires_at)
 VALUES ($1, $2, 'sign_in', $3, now() + interval '10 minutes')

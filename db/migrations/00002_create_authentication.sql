@@ -86,6 +86,8 @@ CREATE TABLE telegram_login_attempts (
     expires_at TIMESTAMPTZ NOT NULL,
     approved_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
+    callback_claimed_at TIMESTAMPTZ,
+    recovery_ticket_hash BYTEA UNIQUE,
     CONSTRAINT telegram_login_attempts_hash_lengths
         CHECK (octet_length(state_hash) = 32 AND octet_length(poll_secret_hash) = 32),
     CONSTRAINT telegram_login_attempts_pkce_ciphertext_length
@@ -102,7 +104,11 @@ CREATE TABLE telegram_login_attempts (
     CONSTRAINT telegram_login_attempts_approval_has_subject
         CHECK ((approved_at IS NULL) = (telegram_subject IS NULL)),
     CONSTRAINT telegram_login_attempts_completed_is_approved
-        CHECK (completed_at IS NULL OR approved_at IS NOT NULL)
+        CHECK (completed_at IS NULL OR approved_at IS NOT NULL),
+    CONSTRAINT telegram_recovery_ticket_length
+        CHECK (recovery_ticket_hash IS NULL OR octet_length(recovery_ticket_hash) = 32),
+    CONSTRAINT telegram_recovery_ticket_completed
+        CHECK (recovery_ticket_hash IS NULL OR completed_at IS NOT NULL)
 );
 
 CREATE INDEX telegram_login_attempts_expires_idx

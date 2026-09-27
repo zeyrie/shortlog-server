@@ -62,7 +62,7 @@ func New(pool *pgxpool.Pool) *Service {
 type Principal struct {
 	SessionID       pgtype.UUID
 	AccountID       pgtype.UUID
-	Username        pgtype.Text
+	Username        string
 	TimeZone        string
 	AccountCreated  pgtype.Timestamptz
 	AuthenticatedAt pgtype.Timestamptz
@@ -96,8 +96,8 @@ func (s *Service) resolveVerifiedIdentity(ctx context.Context, provider, subject
 	defer tx.Rollback(ctx)
 
 	queries := s.queries.WithTx(tx)
-	account, err := queries.CreateAccountWithProfile(ctx, db.CreateAccountWithProfileParams{
-		Username: pgtype.Text{String: newProfile.Username, Valid: true}, TimeZone: newProfile.TimeZone,
+	account, err := queries.CreateAccount(ctx, db.CreateAccountParams{
+		Username: newProfile.Username, TimeZone: newProfile.TimeZone,
 	})
 	if err != nil {
 		return db.Account{}, err
@@ -260,7 +260,7 @@ func (s *Service) UpdateProfile(ctx context.Context, accountID pgtype.UUID, prof
 		return db.Account{}, err
 	}
 	account, err := s.queries.UpdateAccountProfile(ctx, db.UpdateAccountProfileParams{
-		ID: accountID, Username: pgtype.Text{String: validated.Username, Valid: true}, TimeZone: validated.TimeZone,
+		ID: accountID, Username: validated.Username, TimeZone: validated.TimeZone,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.Account{}, ErrAccountUnavailable

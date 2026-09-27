@@ -10,10 +10,16 @@ import (
 
 type Account struct {
 	ID                  pgtype.UUID
-	Username            pgtype.Text
+	Username            string
 	TimeZone            string
 	CreatedAt           pgtype.Timestamptz
 	DeletionRequestedAt pgtype.Timestamptz
+}
+
+type AuthRateLimit struct {
+	Key          []byte
+	WindowStart  pgtype.Timestamptz
+	RequestCount int32
 }
 
 type EmailLoginChallenge struct {
@@ -29,12 +35,6 @@ type EmailLoginChallenge struct {
 	VerifiedAt           pgtype.Timestamptz
 	CompletionTokenHash  []byte
 	CompletedAt          pgtype.Timestamptz
-}
-
-type EmailLoginLimit struct {
-	Key          []byte
-	WindowStart  pgtype.Timestamptz
-	RequestCount int32
 }
 
 type LoginIdentity struct {

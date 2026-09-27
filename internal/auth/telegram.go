@@ -119,7 +119,7 @@ func (s *TelegramLogin) Start(ctx context.Context, remoteIP string) (TelegramSta
 	// Keep the unauthenticated start endpoint bounded across server instances.
 	m := hmac.New(sha256.New, s.key)
 	_, _ = m.Write([]byte("telegram-start-ip:" + remoteIP))
-	count, err := s.service.queries.CountEmailRequests(ctx, m.Sum(nil))
+	count, err := s.service.queries.CountAuthRequests(ctx, m.Sum(nil))
 	if err != nil {
 		return TelegramStart{}, err
 	}

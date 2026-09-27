@@ -29,7 +29,7 @@ type AuthenticateSessionRow struct {
 	AuthenticatedAt pgtype.Timestamptz
 	LastUsedAt      pgtype.Timestamptz
 	CheckedAt       pgtype.Timestamptz
-	Username        pgtype.Text
+	Username        string
 	TimeZone        string
 	CreatedAt       pgtype.Timestamptz
 }
