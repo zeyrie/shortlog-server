@@ -42,8 +42,11 @@ type telegramLogin interface {
 	Restore(context.Context, string, string) (string, error)
 }
 
-func newHandler(db databasePinger, sessions sessionManager, email emailLogin, telegram telegramLogin) http.Handler {
+func newHandler(db databasePinger, sessions sessionManager, email emailLogin, telegram telegramLogin, projects projectManager) http.Handler {
 	mux := http.NewServeMux()
+	if projects != nil {
+		registerProjectRoutes(mux, sessions, projects)
+	}
 
 	mux.HandleFunc("/healthz", onlyMethod(http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -446,7 +449,11 @@ func newHandler(db databasePinger, sessions sessionManager, email emailLogin, te
 }
 
 func decodeInput(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	return decodeInputLimit(w, r, dst, 4096)
+}
+
+func decodeInputLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()

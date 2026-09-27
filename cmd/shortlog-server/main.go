@@ -16,6 +16,7 @@ import (
 
 	"shortlog-server/internal/auth"
 	"shortlog-server/internal/mail"
+	"shortlog-server/internal/projects"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -97,7 +98,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              address,
-		Handler:           newHandler(pool, service, auth.NewEmailLogin(service, sender, key), telegram),
+		Handler:           newHandler(pool, service, auth.NewEmailLogin(service, sender, key), telegram, projects.New(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,

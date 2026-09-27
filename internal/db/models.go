@@ -45,6 +45,16 @@ type LoginIdentity struct {
 	LinkedAt  pgtype.Timestamptz
 }
 
+type Project struct {
+	ID          pgtype.UUID
+	AccountID   pgtype.UUID
+	Name        string
+	Description pgtype.Text
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+}
+
 type Session struct {
 	ID              pgtype.UUID
 	AccountID       pgtype.UUID
