@@ -31,6 +31,12 @@ type EmailLoginChallenge struct {
 	CompletedAt          pgtype.Timestamptz
 }
 
+type EmailLoginLimit struct {
+	Key          []byte
+	WindowStart  pgtype.Timestamptz
+	RequestCount int32
+}
+
 type LoginIdentity struct {
 	ID        pgtype.UUID
 	AccountID pgtype.UUID

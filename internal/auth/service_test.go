@@ -9,11 +9,36 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestValidateNewAccountProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		profile *NewAccountProfile
+		want    error
+	}{
+		{"missing", nil, ErrProfileRequired},
+		{"missing zone", &NewAccountProfile{Username: "Ari"}, ErrProfileRequired},
+		{"blank username", &NewAccountProfile{Username: "  ", TimeZone: "UTC"}, ErrInvalidProfile},
+		{"too long", &NewAccountProfile{Username: strings.Repeat("a", 81), TimeZone: "UTC"}, ErrInvalidProfile},
+		{"control character", &NewAccountProfile{Username: "Ari\nAdmin", TimeZone: "UTC"}, ErrInvalidProfile},
+		{"invalid zone", &NewAccountProfile{Username: "Ari", TimeZone: "Mars/Base"}, ErrInvalidProfile},
+		{"local zone", &NewAccountProfile{Username: "Ari", TimeZone: "Local"}, ErrInvalidProfile},
+		{"valid", &NewAccountProfile{Username: " Ari ", TimeZone: "Asia/Kolkata"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, err := validateNewAccountProfile(tc.profile)
+			if !errors.Is(err, tc.want) || (tc.want == nil && (profile.Username != "Ari" || profile.TimeZone != "Asia/Kolkata")) {
+				t.Fatalf("validate profile = %+v, %v; want %v", profile, err, tc.want)
+			}
+		})
+	}
+}
 
 func TestSessionLifecyclePostgres(t *testing.T) {
 	url := os.Getenv("SHORTLOG_TEST_DATABASE_URL")
@@ -35,7 +60,7 @@ func TestSessionLifecyclePostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	subject := hex.EncodeToString(random)
-	account, err := svc.ResolveVerifiedIdentity(ctx, "telegram", subject)
+	account, err := svc.resolveVerifiedIdentity(ctx, "telegram", subject, &NewAccountProfile{Username: "Tester", TimeZone: "UTC"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,12 +71,12 @@ func TestSessionLifecyclePostgres(t *testing.T) {
 			t.Errorf("cleanup account: %v", err)
 		}
 	})
-	same, err := svc.ResolveVerifiedIdentity(ctx, "telegram", subject)
+	same, err := svc.resolveVerifiedIdentity(ctx, "telegram", subject, nil)
 	if err != nil || same.ID != account.ID {
 		t.Fatalf("same identity resolved to %v, %v; want %v", same.ID, err, account.ID)
 	}
 
-	token, first, err := svc.IssueSession(ctx, account.ID, "Shortlog TUI/macOS")
+	token, first, err := svc.issueSessionForAccount(ctx, account.ID, "Shortlog TUI/macOS")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +88,7 @@ func TestSessionLifecyclePostgres(t *testing.T) {
 	if !bytes.Equal(first.TokenHash, digest[:]) {
 		t.Fatal("session did not store the token's SHA-256 digest")
 	}
-	secondToken, second, err := svc.IssueSession(ctx, account.ID, "Shortlog TUI/Linux")
+	secondToken, second, err := svc.issueSessionForAccount(ctx, account.ID, "Shortlog TUI/Linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +111,7 @@ func TestSessionLifecyclePostgres(t *testing.T) {
 	if _, err := svc.Authenticate(ctx, token); !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("revoked token error = %v", err)
 	}
-	other, err := svc.ResolveVerifiedIdentity(ctx, "telegram", subject+"-other")
+	other, err := svc.resolveVerifiedIdentity(ctx, "telegram", subject+"-other", &NewAccountProfile{Username: "Other", TimeZone: "UTC"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +174,7 @@ func TestSessionLifecyclePostgres(t *testing.T) {
 		t.Fatalf("malformed token error = %v", err)
 	}
 
-	activeToken, _, err := svc.IssueSession(ctx, account.ID, "Shortlog TUI/macOS")
+	activeToken, _, err := svc.issueSessionForAccount(ctx, account.ID, "Shortlog TUI/macOS")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,10 +184,10 @@ func TestSessionLifecyclePostgres(t *testing.T) {
 	if _, err := svc.Authenticate(ctx, activeToken); !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("deleted-account token error = %v", err)
 	}
-	if _, _, err := svc.IssueSession(ctx, account.ID, "Shortlog TUI/macOS"); !errors.Is(err, ErrAccountUnavailable) {
+	if _, _, err := svc.issueSessionForAccount(ctx, account.ID, "Shortlog TUI/macOS"); !errors.Is(err, ErrAccountUnavailable) {
 		t.Fatalf("deleted-account issue error = %v", err)
 	}
-	if _, err := svc.ResolveVerifiedIdentity(ctx, "telegram", subject); !errors.Is(err, ErrAccountUnavailable) {
+	if _, err := svc.resolveVerifiedIdentity(ctx, "telegram", subject, nil); !errors.Is(err, ErrAccountUnavailable) {
 		t.Fatalf("deleted-account identity error = %v", err)
 	}
 }

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"shortlog-server/internal/auth"
+	"shortlog-server/internal/mail"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -54,9 +57,27 @@ func run() error {
 		return errors.New("cannot connect to database")
 	}
 
+	service := auth.New(pool)
+
+	key, err := hex.DecodeString(os.Getenv("EMAIL_OTP_KEY"))
+	if err != nil || len(key) != 32 {
+		return errors.New("EMAIL_OTP_KEY must be 32 random bytes encoded as 64 hex characters")
+	}
+
+	password := os.Getenv("SMTP_PASSWORD")
+	var sender auth.CodeSender
+
+	if password != "" {
+		sender = mail.SMTP{Address: net.JoinHostPort(os.Getenv("SMTP_HOST"), os.Getenv("SMTP_PORT")),
+			Username: os.Getenv("SMTP_USER"), From: os.Getenv("SMTP_FROM"), Password: password}
+		if os.Getenv("SMTP_HOST") == "" || os.Getenv("SMTP_PORT") != "465" || os.Getenv("SMTP_USER") == "" || os.Getenv("SMTP_FROM") == "" {
+			return errors.New("SMTP_HOST, SMTP_PORT=465, SMTP_USER, and SMTP_FROM are required when SMTP_PASSWORD is set")
+		}
+	}
+
 	server := &http.Server{
 		Addr:              address,
-		Handler:           newHandler(pool, auth.New(pool)),
+		Handler:           newHandler(pool, service, auth.NewEmailLogin(service, sender, key)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,

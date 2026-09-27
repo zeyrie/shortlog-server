@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	_ "time/tzdata"
 	"unicode"
 	"unicode/utf8"
 
@@ -23,7 +24,31 @@ import (
 var (
 	ErrInvalidSession     = errors.New("invalid session")
 	ErrAccountUnavailable = errors.New("account unavailable")
+	ErrProfileRequired    = errors.New("account profile required")
+	ErrInvalidProfile     = errors.New("invalid account profile")
 )
+
+type NewAccountProfile struct {
+	Username string
+	TimeZone string
+}
+
+func validateNewAccountProfile(profile *NewAccountProfile) (NewAccountProfile, error) {
+	if profile == nil || profile.Username == "" || profile.TimeZone == "" {
+		return NewAccountProfile{}, ErrProfileRequired
+	}
+	username := strings.TrimSpace(profile.Username)
+	if username == "" || utf8.RuneCountInString(username) > 80 || strings.ContainsFunc(username, unicode.IsControl) {
+		return NewAccountProfile{}, ErrInvalidProfile
+	}
+	if len(profile.TimeZone) > 128 || profile.TimeZone == "Local" || strings.TrimSpace(profile.TimeZone) != profile.TimeZone {
+		return NewAccountProfile{}, ErrInvalidProfile
+	}
+	if _, err := time.LoadLocation(profile.TimeZone); err != nil {
+		return NewAccountProfile{}, ErrInvalidProfile
+	}
+	return NewAccountProfile{Username: username, TimeZone: profile.TimeZone}, nil
+}
 
 type Service struct {
 	pool    *pgxpool.Pool
@@ -43,10 +68,9 @@ type Principal struct {
 	AuthenticatedAt pgtype.Timestamptz
 }
 
-// ResolveVerifiedIdentity must only be called after an authentication provider
-// has verified ownership of the subject. It is not an HTTP request handler.
-// See the auth-boundary TODO in doc.go before adding public login endpoints.
-func (s *Service) ResolveVerifiedIdentity(ctx context.Context, provider, subject string) (db.Account, error) {
+// resolveVerifiedIdentity accepts only a provider-verified subject; never call
+// it with a subject claimed directly by an HTTP request.
+func (s *Service) resolveVerifiedIdentity(ctx context.Context, provider, subject string, profile *NewAccountProfile) (db.Account, error) {
 	if !validIdentity(provider, subject) {
 		return db.Account{}, errors.New("invalid verified identity")
 	}
@@ -60,6 +84,10 @@ func (s *Service) ResolveVerifiedIdentity(ctx context.Context, provider, subject
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return db.Account{}, err
 	}
+	newProfile, err := validateNewAccountProfile(profile)
+	if err != nil {
+		return db.Account{}, err
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -68,7 +96,9 @@ func (s *Service) ResolveVerifiedIdentity(ctx context.Context, provider, subject
 	defer tx.Rollback(ctx)
 
 	queries := s.queries.WithTx(tx)
-	account, err := queries.CreateAccount(ctx)
+	account, err := queries.CreateAccountWithProfile(ctx, db.CreateAccountWithProfileParams{
+		Username: pgtype.Text{String: newProfile.Username, Valid: true}, TimeZone: newProfile.TimeZone,
+	})
 	if err != nil {
 		return db.Account{}, err
 	}
@@ -126,12 +156,15 @@ func (s *Service) activeAccount(ctx context.Context, id pgtype.UUID) (db.Account
 	return account, nil
 }
 
-// IssueSession returns 32 CSPRNG bytes encoded as an unpadded base64url token.
+// issueSessionForAccount returns 32 CSPRNG bytes encoded as an unpadded base64url token.
 // Because the token has 256 bits of entropy, SHA-256 (rather than a password
 // KDF) is appropriate for its stored verifier. Only the digest is persisted;
 // callers must deliver the token over an authenticated TLS response.
-// See the auth-boundary TODO in doc.go before adding public login endpoints.
-func (s *Service) IssueSession(ctx context.Context, accountID pgtype.UUID, userAgent string) (string, db.Session, error) {
+func (s *Service) issueSessionForAccount(ctx context.Context, accountID pgtype.UUID, userAgent string) (string, db.Session, error) {
+	return issueSession(ctx, s.queries, accountID, userAgent)
+}
+
+func issueSession(ctx context.Context, queries *db.Queries, accountID pgtype.UUID, userAgent string) (string, db.Session, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", db.Session{}, fmt.Errorf("generate session token: %w", err)
@@ -152,7 +185,7 @@ func (s *Service) IssueSession(ctx context.Context, accountID pgtype.UUID, userA
 	}
 	userAgent = limitRunes(userAgent, 512)
 
-	session, err := s.queries.CreateSession(ctx, db.CreateSessionParams{
+	session, err := queries.CreateSession(ctx, db.CreateSessionParams{
 		AccountID: accountID, TokenHash: hash[:], UserAgent: userAgent,
 		DeviceLabel: limitRunes(userAgent, 128),
 	})
@@ -219,6 +252,20 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Principal, er
 
 func (s *Service) ListSessions(ctx context.Context, accountID pgtype.UUID) ([]db.ListActiveSessionsRow, error) {
 	return s.queries.ListActiveSessions(ctx, accountID)
+}
+
+func (s *Service) UpdateProfile(ctx context.Context, accountID pgtype.UUID, profile NewAccountProfile) (db.Account, error) {
+	validated, err := validateNewAccountProfile(&profile)
+	if err != nil {
+		return db.Account{}, err
+	}
+	account, err := s.queries.UpdateAccountProfile(ctx, db.UpdateAccountProfileParams{
+		ID: accountID, Username: pgtype.Text{String: validated.Username, Valid: true}, TimeZone: validated.TimeZone,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Account{}, ErrAccountUnavailable
+	}
+	return account, err
 }
 
 func (s *Service) RevokeSession(ctx context.Context, accountID, sessionID pgtype.UUID) (bool, error) {

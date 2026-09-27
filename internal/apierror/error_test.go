@@ -13,6 +13,7 @@ func TestWrite(t *testing.T) {
 		want int
 	}{
 		{InvalidRequest, http.StatusBadRequest},
+		{ProfileRequired, http.StatusUnprocessableEntity},
 		{Unauthorized, http.StatusUnauthorized},
 		{Forbidden, http.StatusForbidden},
 		{NotFound, http.StatusNotFound},

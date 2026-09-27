@@ -10,6 +10,7 @@ type Code string
 
 const (
 	InvalidRequest     Code = "invalid_request"
+	ProfileRequired    Code = "profile_required"
 	Unauthorized       Code = "unauthorized"
 	Forbidden          Code = "forbidden"
 	NotFound           Code = "not_found"
@@ -38,6 +39,8 @@ func (c Code) definition() definition {
 	switch c {
 	case InvalidRequest:
 		return definition{http.StatusBadRequest, "Invalid request."}
+	case ProfileRequired:
+		return definition{http.StatusUnprocessableEntity, "Username and time zone are required to create an account."}
 	case Unauthorized:
 		return definition{http.StatusUnauthorized, "Authentication required."}
 	case Forbidden:
@@ -61,7 +64,7 @@ func (c Code) definition() definition {
 // should be logged separately and never returned to the client.
 func Write(w http.ResponseWriter, code Code) {
 	switch code {
-	case InvalidRequest, Unauthorized, Forbidden, NotFound, MethodNotAllowed,
+	case InvalidRequest, ProfileRequired, Unauthorized, Forbidden, NotFound, MethodNotAllowed,
 		Conflict, RateLimited, ServiceUnavailable:
 	default:
 		code = Internal

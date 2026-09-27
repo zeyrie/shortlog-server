@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -24,9 +26,16 @@ type sessionManager interface {
 	ListSessions(context.Context, pgtype.UUID) ([]db.ListActiveSessionsRow, error)
 	RevokeSession(context.Context, pgtype.UUID, pgtype.UUID) (bool, error)
 	RevokeAllSessions(context.Context, pgtype.UUID) (int64, error)
+	UpdateProfile(context.Context, pgtype.UUID, auth.NewAccountProfile) (db.Account, error)
 }
 
-func newHandler(db databasePinger, sessions sessionManager) http.Handler {
+type emailLogin interface {
+	Start(context.Context, string, string) (pgtype.UUID, error)
+	Verify(context.Context, pgtype.UUID, string, string, *auth.NewAccountProfile) (auth.EmailResult, error)
+	Restore(context.Context, string, string) (string, error)
+}
+
+func newHandler(db databasePinger, sessions sessionManager, email emailLogin) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", onlyMethod(http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {
@@ -47,19 +56,173 @@ func newHandler(db databasePinger, sessions sessionManager) http.Handler {
 		_, _ = w.Write([]byte("ready\n"))
 	}))
 
-	mux.HandleFunc("/v1/me", onlyMethod(http.MethodGet, withSession(sessions, func(w http.ResponseWriter, _ *http.Request, p auth.Principal) {
+	mux.HandleFunc("/v1/auth/email/start", onlyMethod(http.MethodPost, func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		r = r.WithContext(ctx)
+		var input struct {
+			Email string `json:"email"`
+		}
+		if !decodeInput(w, r, &input) {
+			return
+		}
+
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+
+		id, err := email.Start(ctx, input.Email, ip)
+		if errors.Is(err, auth.ErrEmailRateLimit) {
+			apierror.Write(w, apierror.RateLimited)
+			return
+		}
+
+		if errors.Is(err, auth.ErrEmailUnavailable) {
+			apierror.Write(w, apierror.ServiceUnavailable)
+			return
+		}
+
+		if errors.Is(err, auth.ErrInvalidChallenge) {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusAccepted, struct {
+			ChallengeID string `json:"challenge_id"`
+		}{id.String()})
+	}))
+
+	mux.HandleFunc("/v1/auth/email/verify", onlyMethod(http.MethodPost, func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		r = r.WithContext(ctx)
+
+		var input struct {
+			ChallengeID string `json:"challenge_id"`
+			Code        string `json:"code"`
+			Username    string `json:"username"`
+			TimeZone    string `json:"time_zone"`
+		}
+		if !decodeInput(w, r, &input) {
+			return
+		}
+
+		var id pgtype.UUID
+
+		if err := id.Scan(input.ChallengeID); err != nil || !id.Valid {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+
+		var profile *auth.NewAccountProfile
+		if input.Username != "" || input.TimeZone != "" {
+			profile = &auth.NewAccountProfile{Username: input.Username, TimeZone: input.TimeZone}
+		}
+		result, err := email.Verify(ctx, id, input.Code, r.UserAgent(), profile)
+		if errors.Is(err, auth.ErrProfileRequired) {
+			apierror.Write(w, apierror.ProfileRequired)
+			return
+		}
+		if errors.Is(err, auth.ErrInvalidProfile) {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+		if errors.Is(err, auth.ErrInvalidChallenge) {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+
+		if result.RecoveryTicket != "" {
+			writeJSON(w, http.StatusOK, struct {
+				Status         string `json:"status"`
+				RecoveryTicket string `json:"recovery_ticket"`
+			}{"restore_required", result.RecoveryTicket})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, struct {
+			Status string `json:"status"`
+			Token  string `json:"token"`
+		}{"signed_in", result.Token})
+	}))
+
+	mux.HandleFunc("/v1/auth/email/restore", onlyMethod(http.MethodPost, func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		r = r.WithContext(ctx)
+		var input struct {
+			RecoveryTicket string `json:"recovery_ticket"`
+		}
+		if !decodeInput(w, r, &input) {
+			return
+		}
+
+		token, err := email.Restore(ctx, input.RecoveryTicket, r.UserAgent())
+		if errors.Is(err, auth.ErrInvalidChallenge) {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, struct {
+			Token string `json:"token"`
+		}{token})
+	}))
+	mux.HandleFunc("/v1/auth/logout", onlyMethod(http.MethodPost, withSession(sessions, func(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+		if _, err := sessions.RevokeSession(r.Context(), p.AccountID, p.SessionID); err != nil {
+			serverError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})))
+
+	mux.HandleFunc("/v1/me", onlyMethods(withSession(sessions, func(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+		if r.Method == http.MethodPatch {
+			var input struct {
+				Username string `json:"username"`
+				TimeZone string `json:"time_zone"`
+			}
+			if !decodeInput(w, r, &input) {
+				return
+			}
+			account, err := sessions.UpdateProfile(r.Context(), p.AccountID, auth.NewAccountProfile{
+				Username: input.Username, TimeZone: input.TimeZone,
+			})
+			if errors.Is(err, auth.ErrInvalidProfile) || errors.Is(err, auth.ErrProfileRequired) {
+				apierror.Write(w, apierror.InvalidRequest)
+				return
+			}
+			if err != nil {
+				serverError(w, r, err)
+				return
+			}
+			writeMe(w, account.ID, &account.Username.String, account.TimeZone, account.CreatedAt.Time)
+			return
+		}
 		var username *string
 		if p.Username.Valid {
 			username = &p.Username.String
 		}
-
-		writeJSON(w, http.StatusOK, struct {
-			ID        string    `json:"id"`
-			Username  *string   `json:"username"`
-			TimeZone  string    `json:"time_zone"`
-			CreatedAt time.Time `json:"created_at"`
-		}{p.AccountID.String(), username, p.TimeZone, p.AccountCreated.Time})
-	})))
+		writeMe(w, p.AccountID, username, p.TimeZone, p.AccountCreated.Time)
+	}), http.MethodGet, http.MethodPatch))
 
 	mux.HandleFunc("/v1/sessions", onlyMethod(http.MethodGet, withSession(sessions, func(w http.ResponseWriter, r *http.Request, p auth.Principal) {
 		rows, err := sessions.ListSessions(r.Context(), p.AccountID)
@@ -131,15 +294,50 @@ func newHandler(db databasePinger, sessions sessionManager) http.Handler {
 	return mux
 }
 
-func onlyMethod(method string, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != method {
-			w.Header().Set("Allow", method)
-			apierror.Write(w, apierror.MethodNotAllowed)
-			return
-		}
-		next(w, r)
+func decodeInput(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		apierror.Write(w, apierror.InvalidRequest)
+		return false
 	}
+
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		apierror.Write(w, apierror.InvalidRequest)
+		return false
+	}
+
+	return true
+}
+
+func onlyMethod(method string, next http.HandlerFunc) http.HandlerFunc {
+	return onlyMethods(next, method)
+}
+
+func onlyMethods(next http.HandlerFunc, methods ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		for _, method := range methods {
+			if r.Method == method {
+				next(w, r)
+				return
+			}
+		}
+		w.Header().Set("Allow", strings.Join(methods, ", "))
+		apierror.Write(w, apierror.MethodNotAllowed)
+	}
+}
+
+func writeMe(w http.ResponseWriter, id pgtype.UUID, username *string, timeZone string, createdAt time.Time) {
+	writeJSON(w, http.StatusOK, struct {
+		ID        string    `json:"id"`
+		Username  *string   `json:"username"`
+		TimeZone  string    `json:"time_zone"`
+		CreatedAt time.Time `json:"created_at"`
+	}{id.String(), username, timeZone, createdAt})
 }
 
 func withSession(sessions sessionManager, next func(http.ResponseWriter, *http.Request, auth.Principal)) http.HandlerFunc {

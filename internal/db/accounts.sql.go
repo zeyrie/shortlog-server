@@ -29,6 +29,29 @@ func (q *Queries) CreateAccount(ctx context.Context) (Account, error) {
 	return i, err
 }
 
+const createAccountWithProfile = `-- name: CreateAccountWithProfile :one
+INSERT INTO accounts (username, time_zone) VALUES ($1, $2)
+RETURNING id, username, time_zone, created_at, deletion_requested_at
+`
+
+type CreateAccountWithProfileParams struct {
+	Username pgtype.Text
+	TimeZone string
+}
+
+func (q *Queries) CreateAccountWithProfile(ctx context.Context, arg CreateAccountWithProfileParams) (Account, error) {
+	row := q.db.QueryRow(ctx, createAccountWithProfile, arg.Username, arg.TimeZone)
+	var i Account
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.TimeZone,
+		&i.CreatedAt,
+		&i.DeletionRequestedAt,
+	)
+	return i, err
+}
+
 const getAccount = `-- name: GetAccount :one
 SELECT id, username, time_zone, created_at, deletion_requested_at
 FROM accounts
@@ -37,6 +60,31 @@ WHERE id = $1
 
 func (q *Queries) GetAccount(ctx context.Context, id pgtype.UUID) (Account, error) {
 	row := q.db.QueryRow(ctx, getAccount, id)
+	var i Account
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.TimeZone,
+		&i.CreatedAt,
+		&i.DeletionRequestedAt,
+	)
+	return i, err
+}
+
+const updateAccountProfile = `-- name: UpdateAccountProfile :one
+UPDATE accounts SET username = $2, time_zone = $3
+WHERE id = $1 AND deletion_requested_at IS NULL
+RETURNING id, username, time_zone, created_at, deletion_requested_at
+`
+
+type UpdateAccountProfileParams struct {
+	ID       pgtype.UUID
+	Username pgtype.Text
+	TimeZone string
+}
+
+func (q *Queries) UpdateAccountProfile(ctx context.Context, arg UpdateAccountProfileParams) (Account, error) {
+	row := q.db.QueryRow(ctx, updateAccountProfile, arg.ID, arg.Username, arg.TimeZone)
 	var i Account
 	err := row.Scan(
 		&i.ID,

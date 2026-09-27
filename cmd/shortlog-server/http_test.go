@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,9 +48,12 @@ func (fakeSessions) RevokeSession(context.Context, pgtype.UUID, pgtype.UUID) (bo
 func (fakeSessions) RevokeAllSessions(context.Context, pgtype.UUID) (int64, error) {
 	return 0, nil
 }
+func (fakeSessions) UpdateProfile(context.Context, pgtype.UUID, auth.NewAccountProfile) (db.Account, error) {
+	return db.Account{}, nil
+}
 
 func TestAPIErrorResponses(t *testing.T) {
-	handler := newHandler(fakeDatabase{err: errors.New("database secret")}, fakeSessions{err: errors.New("session secret")})
+	handler := newHandler(fakeDatabase{err: errors.New("database secret")}, fakeSessions{err: errors.New("session secret")}, nil)
 	for _, tc := range []struct {
 		name, method, path, authorization string
 		status                            int
@@ -86,7 +92,7 @@ func TestAPIErrorResponses(t *testing.T) {
 }
 
 func TestProtectedRequestDeadline(t *testing.T) {
-	handler := newHandler(fakeDatabase{}, fakeSessions{waitForCancel: true})
+	handler := newHandler(fakeDatabase{}, fakeSessions{waitForCancel: true}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	r := httptest.NewRequest(http.MethodGet, "/v1/me", nil).WithContext(ctx)
@@ -100,7 +106,7 @@ func TestProtectedRequestDeadline(t *testing.T) {
 
 func TestHealth(t *testing.T) {
 	response := httptest.NewRecorder()
-	newHandler(fakeDatabase{err: errors.New("offline")}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	newHandler(fakeDatabase{err: errors.New("offline")}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -118,11 +124,7 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	svc := auth.New(pool)
-	random := make([]byte, 16)
-	if _, err := rand.Read(random); err != nil {
-		t.Fatal(err)
-	}
-	account, err := svc.ResolveVerifiedIdentity(ctx, "telegram", hex.EncodeToString(random))
+	account, err := db.New(pool).CreateAccount(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,11 +135,22 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 			t.Errorf("cleanup account: %v", err)
 		}
 	})
-	token, session, err := svc.IssueSession(ctx, account.ID, "Shortlog TUI/macOS")
+	newTestSession := func(label string) (string, db.Session, error) {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return "", db.Session{}, err
+		}
+		hash := sha256.Sum256(raw)
+		session, err := db.New(pool).CreateSession(ctx, db.CreateSessionParams{
+			AccountID: account.ID, TokenHash: hash[:], UserAgent: label, DeviceLabel: label,
+		})
+		return base64.RawURLEncoding.EncodeToString(raw), session, err
+	}
+	token, session, err := newTestSession("Shortlog TUI/macOS")
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(pool, svc)
+	handler := newHandler(pool, svc, nil)
 	request := func(method, path, bearer string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, path, nil)
@@ -154,6 +167,24 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	me := request(http.MethodGet, "/v1/me", token)
 	if me.Code != http.StatusOK || !strings.Contains(me.Body.String(), account.ID.String()) {
 		t.Fatalf("/me = %d %s", me.Code, me.Body.String())
+	}
+	profileRequest := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPatch, "/v1/me", bytes.NewBufferString(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	if got := profileRequest(`{"username":"Tester","time_zone":"Mars/Base"}`).Code; got != http.StatusBadRequest {
+		t.Fatalf("invalid profile status = %d", got)
+	}
+	updated := profileRequest(`{"username":" Tester ","time_zone":"Asia/Kolkata"}`)
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), `"username":"Tester"`) {
+		t.Fatalf("updated profile = %d %s", updated.Code, updated.Body.String())
+	}
+	me = request(http.MethodGet, "/v1/me", token)
+	if !strings.Contains(me.Body.String(), `"time_zone":"Asia/Kolkata"`) {
+		t.Fatalf("/me after profile update = %d %s", me.Code, me.Body.String())
 	}
 	listed := request(http.MethodGet, "/v1/sessions", token)
 	var sessions []struct {
@@ -172,7 +203,7 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	if got := request(http.MethodGet, "/v1/me", token).Code; got != http.StatusUnauthorized {
 		t.Fatalf("revoked /me status = %d", got)
 	}
-	secondToken, _, err := svc.IssueSession(ctx, account.ID, "Shortlog TUI/Linux")
+	secondToken, _, err := newTestSession("Shortlog TUI/Linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +212,23 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	}
 	if got := request(http.MethodGet, "/v1/me", secondToken).Code; got != http.StatusUnauthorized {
 		t.Fatalf("revoke-all /me status = %d", got)
+	}
+	logoutToken, _, err := newTestSession("Shortlog TUI/logout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, _, err := newTestSession("Shortlog TUI/other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := request(http.MethodPost, "/v1/auth/logout", logoutToken).Code; got != http.StatusNoContent {
+		t.Fatalf("logout status = %d", got)
+	}
+	if got := request(http.MethodGet, "/v1/me", logoutToken).Code; got != http.StatusUnauthorized {
+		t.Fatalf("logged-out /me status = %d", got)
+	}
+	if got := request(http.MethodGet, "/v1/me", otherToken).Code; got != http.StatusOK {
+		t.Fatalf("other device after logout /me status = %d", got)
 	}
 }
 
@@ -195,10 +243,81 @@ func TestReady(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			newHandler(fakeDatabase{err: test.err}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			newHandler(fakeDatabase{err: test.err}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 			if response.Code != test.want {
 				t.Fatalf("ready status = %d, want %d", response.Code, test.want)
 			}
 		})
+	}
+}
+
+type capturedCode struct{ code string }
+
+func (c *capturedCode) SendCode(_ context.Context, _, code string) error { c.code = code; return nil }
+
+func TestEmailHTTPPostgres(t *testing.T) {
+	url := os.Getenv("SHORTLOG_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set SHORTLOG_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	svc := auth.New(pool)
+	sender := &capturedCode{}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	handler := newHandler(pool, svc, auth.NewEmailLogin(svc, sender, key))
+	email := hex.EncodeToString(key[:8]) + "@example.org"
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM accounts WHERE id IN (SELECT account_id FROM login_identities WHERE provider='email' AND subject=$1)", email)
+		_, _ = pool.Exec(cleanupCtx, "DELETE FROM email_login_challenges WHERE email=$1", email)
+	})
+	request := func(path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	start := request("/v1/auth/email/start", `{"email":"`+email+`"}`)
+	var challenge struct {
+		ChallengeID string `json:"challenge_id"`
+	}
+	if start.Code != http.StatusAccepted || json.Unmarshal(start.Body.Bytes(), &challenge) != nil || challenge.ChallengeID == "" {
+		t.Fatalf("start: %d %s", start.Code, start.Body.String())
+	}
+	bareCode := `{"challenge_id":"` + challenge.ChallengeID + `","code":"` + sender.code + `"}`
+	missingProfile := request("/v1/auth/email/verify", bareCode)
+	if missingProfile.Code != http.StatusUnprocessableEntity || !strings.Contains(missingProfile.Body.String(), `"profile_required"`) {
+		t.Fatalf("new account without profile: %d %s", missingProfile.Code, missingProfile.Body.String())
+	}
+	invalidZone := request("/v1/auth/email/verify", `{"challenge_id":"`+challenge.ChallengeID+`","code":"`+sender.code+`","username":"Ari","time_zone":"Mars/Base"}`)
+	if invalidZone.Code != http.StatusBadRequest {
+		t.Fatalf("new account with invalid time zone: %d %s", invalidZone.Code, invalidZone.Body.String())
+	}
+	verify := request("/v1/auth/email/verify", `{"challenge_id":"`+challenge.ChallengeID+`","code":"`+sender.code+`","username":"Ari","time_zone":"Asia/Kolkata"}`)
+	var result struct {
+		Token string `json:"token"`
+	}
+	if verify.Code != http.StatusOK || json.Unmarshal(verify.Body.Bytes(), &result) != nil || result.Token == "" {
+		t.Fatalf("verify: %d %s", verify.Code, verify.Body.String())
+	}
+	r := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	r.Header.Set("Authorization", "Bearer "+result.Token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"username":"Ari"`) || !strings.Contains(w.Body.String(), `"time_zone":"Asia/Kolkata"`) {
+		t.Fatalf("/me: %d %s", w.Code, w.Body.String())
+	}
+	if request("/v1/auth/email/verify", `{"challenge_id":"`+challenge.ChallengeID+`","code":"`+sender.code+`"}`).Code != http.StatusBadRequest {
+		t.Fatal("code was accepted twice")
 	}
 }

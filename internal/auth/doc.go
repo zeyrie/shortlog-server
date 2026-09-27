@@ -1,9 +1,10 @@
 // Package auth owns account identity and session lifecycle operations.
 //
-// TODO(auth-boundary): Before exposing email OTP or OIDC login endpoints,
-// make ResolveVerifiedIdentity and IssueSession private to this package.
 // Only a successful, provider-verified authentication result may resolve or
-// create an account and issue a session. Do not accept a provider subject or
-// account ID directly from an HTTP request as proof of identity. Login flows
-// must also handle deletion-pending accounts with an explicit restore step.
+// create an account and issue a session. These helpers are private to auth;
+// the email OTP completion path verifies the code before calling them.
+// TODO(auth-boundary): Apply the same verified-result-only pattern when adding
+// Telegram OIDC. Do not accept an unverified provider subject or account ID
+// from an HTTP request. Handle deletion-pending accounts with explicit consent
+// before restoring them or issuing a new session.
 package auth
