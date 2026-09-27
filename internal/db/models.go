@@ -70,4 +70,6 @@ type TelegramLoginAttempt struct {
 	ExpiresAt              pgtype.Timestamptz
 	ApprovedAt             pgtype.Timestamptz
 	CompletedAt            pgtype.Timestamptz
+	CallbackClaimedAt      pgtype.Timestamptz
+	RecoveryTicketHash     []byte
 }

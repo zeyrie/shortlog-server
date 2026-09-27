@@ -35,7 +35,14 @@ type emailLogin interface {
 	Restore(context.Context, string, string) (string, error)
 }
 
-func newHandler(db databasePinger, sessions sessionManager, email emailLogin) http.Handler {
+type telegramLogin interface {
+	Start(context.Context, string) (auth.TelegramStart, error)
+	Callback(context.Context, string, string) error
+	Poll(context.Context, pgtype.UUID, string, string, *auth.NewAccountProfile) (auth.TelegramResult, error)
+	Restore(context.Context, string, string) (string, error)
+}
+
+func newHandler(db databasePinger, sessions sessionManager, email emailLogin, telegram telegramLogin) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", onlyMethod(http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {
@@ -71,7 +78,7 @@ func newHandler(db databasePinger, sessions sessionManager, email emailLogin) ht
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 
 		id, err := email.Start(ctx, input.Email, ip)
-		if errors.Is(err, auth.ErrEmailRateLimit) {
+		if errors.Is(err, auth.ErrLoginRateLimit) {
 			apierror.Write(w, apierror.RateLimited)
 			return
 		}
@@ -181,6 +188,154 @@ func newHandler(db databasePinger, sessions sessionManager, email emailLogin) ht
 			return
 		}
 
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, struct {
+			Token string `json:"token"`
+		}{token})
+	}))
+
+	mux.HandleFunc("/v1/auth/telegram/start", onlyMethod(http.MethodPost, func(w http.ResponseWriter, r *http.Request) {
+		if telegram == nil {
+			apierror.Write(w, apierror.ServiceUnavailable)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		r = r.WithContext(ctx)
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		result, err := telegram.Start(ctx, ip)
+		if errors.Is(err, auth.ErrLoginRateLimit) {
+			apierror.Write(w, apierror.RateLimited)
+			return
+		}
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusCreated, struct {
+			AttemptID        string `json:"attempt_id"`
+			PollSecret       string `json:"poll_secret"`
+			AuthorizationURL string `json:"authorization_url"`
+		}{result.AttemptID.String(), result.PollSecret, result.AuthorizationURL})
+	}))
+	mux.HandleFunc("/v1/auth/telegram/callback", onlyMethod(http.MethodGet, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if telegram == nil {
+			apierror.Write(w, apierror.ServiceUnavailable)
+			return
+		}
+		query := r.URL.Query()
+		if len(query["state"]) != 1 || len(query["code"]) != 1 {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		r = r.WithContext(ctx)
+		if err := telegram.Callback(ctx, query.Get("state"), query.Get("code")); err != nil {
+			if errors.Is(err, auth.ErrInvalidChallenge) {
+				apierror.Write(w, apierror.InvalidRequest)
+				return
+			}
+			serverError(w, r, err)
+			return
+		}
+		http.Redirect(w, r, "/v1/auth/telegram/complete", http.StatusSeeOther)
+	}))
+	mux.HandleFunc("/v1/auth/telegram/complete", onlyMethod(http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'")
+		_, _ = io.WriteString(w, "<!doctype html><title>Shortlog</title><p>Telegram approved. Return to Shortlog to finish signing in.</p>")
+	}))
+	mux.HandleFunc("/v1/auth/telegram/poll", onlyMethod(http.MethodPost, func(w http.ResponseWriter, r *http.Request) {
+		if telegram == nil {
+			apierror.Write(w, apierror.ServiceUnavailable)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		r = r.WithContext(ctx)
+		var input struct {
+			AttemptID  string `json:"attempt_id"`
+			PollSecret string `json:"poll_secret"`
+			Username   string `json:"username"`
+			TimeZone   string `json:"time_zone"`
+		}
+		if !decodeInput(w, r, &input) {
+			return
+		}
+		var id pgtype.UUID
+		if err := id.Scan(input.AttemptID); err != nil || !id.Valid {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+		var profile *auth.NewAccountProfile
+		if input.Username != "" || input.TimeZone != "" {
+			profile = &auth.NewAccountProfile{Username: input.Username, TimeZone: input.TimeZone}
+		}
+		result, err := telegram.Poll(ctx, id, input.PollSecret, r.UserAgent(), profile)
+		if errors.Is(err, auth.ErrInvalidChallenge) {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+		if errors.Is(err, auth.ErrProfileRequired) {
+			apierror.Write(w, apierror.ProfileRequired)
+			return
+		}
+		if errors.Is(err, auth.ErrInvalidProfile) {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		if result.Status == "pending" {
+			writeJSON(w, http.StatusAccepted, struct {
+				Status string `json:"status"`
+			}{"pending"})
+			return
+		}
+		if result.Status == "restore_required" {
+			writeJSON(w, http.StatusOK, struct {
+				Status         string `json:"status"`
+				RecoveryTicket string `json:"recovery_ticket"`
+			}{result.Status, result.RecoveryTicket})
+			return
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Status string `json:"status"`
+			Token  string `json:"token"`
+		}{result.Status, result.Token})
+	}))
+	mux.HandleFunc("/v1/auth/telegram/restore", onlyMethod(http.MethodPost, func(w http.ResponseWriter, r *http.Request) {
+		if telegram == nil {
+			apierror.Write(w, apierror.ServiceUnavailable)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		r = r.WithContext(ctx)
+		var input struct {
+			RecoveryTicket string `json:"recovery_ticket"`
+		}
+		if !decodeInput(w, r, &input) {
+			return
+		}
+		token, err := telegram.Restore(ctx, input.RecoveryTicket, r.UserAgent())
+		if errors.Is(err, auth.ErrInvalidChallenge) {
+			apierror.Write(w, apierror.InvalidRequest)
+			return
+		}
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusOK, struct {
 			Token string `json:"token"`

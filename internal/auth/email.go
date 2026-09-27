@@ -18,8 +18,8 @@ import (
 	"shortlog-server/internal/db"
 )
 
-var ErrInvalidChallenge = errors.New("invalid or expired email challenge")
-var ErrEmailRateLimit = errors.New("email login rate limited")
+var ErrInvalidChallenge = errors.New("invalid or expired login challenge")
+var ErrLoginRateLimit = errors.New("login rate limited")
 var ErrEmailUnavailable = errors.New("email delivery unavailable")
 
 type CodeSender interface {
@@ -83,7 +83,7 @@ func (s *EmailLogin) Start(ctx context.Context, address, remoteIP string) (pgtyp
 		}
 
 		if count > limit.max {
-			return pgtype.UUID{}, ErrEmailRateLimit
+			return pgtype.UUID{}, ErrLoginRateLimit
 		}
 	}
 

@@ -175,7 +175,7 @@ func TestEmailLoginRateLimitPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := login.Start(ctx, email, "192.0.2.14"); !errors.Is(err, ErrEmailRateLimit) {
+	if _, err := login.Start(ctx, email, "192.0.2.14"); !errors.Is(err, ErrLoginRateLimit) {
 		t.Fatalf("rate limit: %v", err)
 	}
 }

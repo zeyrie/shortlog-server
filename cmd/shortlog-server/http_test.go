@@ -53,7 +53,7 @@ func (fakeSessions) UpdateProfile(context.Context, pgtype.UUID, auth.NewAccountP
 }
 
 func TestAPIErrorResponses(t *testing.T) {
-	handler := newHandler(fakeDatabase{err: errors.New("database secret")}, fakeSessions{err: errors.New("session secret")}, nil)
+	handler := newHandler(fakeDatabase{err: errors.New("database secret")}, fakeSessions{err: errors.New("session secret")}, nil, nil)
 	for _, tc := range []struct {
 		name, method, path, authorization string
 		status                            int
@@ -92,7 +92,7 @@ func TestAPIErrorResponses(t *testing.T) {
 }
 
 func TestProtectedRequestDeadline(t *testing.T) {
-	handler := newHandler(fakeDatabase{}, fakeSessions{waitForCancel: true}, nil)
+	handler := newHandler(fakeDatabase{}, fakeSessions{waitForCancel: true}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	r := httptest.NewRequest(http.MethodGet, "/v1/me", nil).WithContext(ctx)
@@ -106,7 +106,7 @@ func TestProtectedRequestDeadline(t *testing.T) {
 
 func TestHealth(t *testing.T) {
 	response := httptest.NewRecorder()
-	newHandler(fakeDatabase{err: errors.New("offline")}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	newHandler(fakeDatabase{err: errors.New("offline")}, nil, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -150,7 +150,7 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(pool, svc, nil)
+	handler := newHandler(pool, svc, nil, nil)
 	request := func(method, path, bearer string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, path, nil)
@@ -243,7 +243,7 @@ func TestReady(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			newHandler(fakeDatabase{err: test.err}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			newHandler(fakeDatabase{err: test.err}, nil, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 			if response.Code != test.want {
 				t.Fatalf("ready status = %d, want %d", response.Code, test.want)
 			}
@@ -272,7 +272,7 @@ func TestEmailHTTPPostgres(t *testing.T) {
 	if _, err := rand.Read(key); err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(pool, svc, auth.NewEmailLogin(svc, sender, key))
+	handler := newHandler(pool, svc, auth.NewEmailLogin(svc, sender, key), nil)
 	email := hex.EncodeToString(key[:8]) + "@example.org"
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -319,5 +319,76 @@ func TestEmailHTTPPostgres(t *testing.T) {
 	}
 	if request("/v1/auth/email/verify", `{"challenge_id":"`+challenge.ChallengeID+`","code":"`+sender.code+`"}`).Code != http.StatusBadRequest {
 		t.Fatal("code was accepted twice")
+	}
+}
+
+type fakeTelegram struct{ id pgtype.UUID }
+
+func (f fakeTelegram) Start(context.Context, string) (auth.TelegramStart, error) {
+	return auth.TelegramStart{AttemptID: f.id, PollSecret: strings.Repeat("a", 43), AuthorizationURL: "https://oauth.telegram.org/auth"}, nil
+}
+func (fakeTelegram) Callback(_ context.Context, state, code string) error {
+	if state != "valid" || code != "approved" {
+		return auth.ErrInvalidChallenge
+	}
+	return nil
+}
+func (f fakeTelegram) Poll(_ context.Context, id pgtype.UUID, secret, _ string, profile *auth.NewAccountProfile) (auth.TelegramResult, error) {
+	if id != f.id || secret != strings.Repeat("a", 43) {
+		return auth.TelegramResult{}, auth.ErrInvalidChallenge
+	}
+	if profile == nil {
+		return auth.TelegramResult{Status: "pending"}, nil
+	}
+	return auth.TelegramResult{Status: "signed_in", Token: "test-session"}, nil
+}
+func (fakeTelegram) Restore(context.Context, string, string) (string, error) {
+	return "restored-session", nil
+}
+
+func TestTelegramHTTP(t *testing.T) {
+	var id pgtype.UUID
+	if err := id.Scan("94bc4842-25b9-4c54-8c9d-47a9050e620c"); err != nil {
+		t.Fatal(err)
+	}
+	handler := newHandler(fakeDatabase{}, nil, nil, fakeTelegram{id: id})
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	started := request(http.MethodPost, "/v1/auth/telegram/start", "")
+	if started.Code != http.StatusCreated || !strings.Contains(started.Body.String(), id.String()) || !strings.Contains(started.Body.String(), "authorization_url") {
+		t.Fatalf("start = %d %s", started.Code, started.Body.String())
+	}
+	if got := request(http.MethodGet, "/v1/auth/telegram/callback?state=invalid&code=approved", "").Code; got != http.StatusBadRequest {
+		t.Fatalf("invalid callback = %d", got)
+	}
+	callback := request(http.MethodGet, "/v1/auth/telegram/callback?state=valid&code=approved", "")
+	if callback.Code != http.StatusSeeOther || callback.Header().Get("Location") != "/v1/auth/telegram/complete" {
+		t.Fatalf("callback = %d %s", callback.Code, callback.Body.String())
+	}
+	complete := request(http.MethodGet, callback.Header().Get("Location"), "")
+	if complete.Code != http.StatusOK || strings.Contains(complete.Body.String(), "test-session") {
+		t.Fatalf("completion page = %d %s", complete.Code, complete.Body.String())
+	}
+	body := `{"attempt_id":"` + id.String() + `","poll_secret":"` + strings.Repeat("a", 43) + `"}`
+	pending := request(http.MethodPost, "/v1/auth/telegram/poll", body)
+	if pending.Code != http.StatusAccepted || !strings.Contains(pending.Body.String(), `"pending"`) {
+		t.Fatalf("poll = %d %s", pending.Code, pending.Body.String())
+	}
+	approved := request(http.MethodPost, "/v1/auth/telegram/poll", `{"attempt_id":"`+id.String()+`","poll_secret":"`+strings.Repeat("a", 43)+`","username":"Ari","time_zone":"UTC"}`)
+	if approved.Code != http.StatusOK || !strings.Contains(approved.Body.String(), `"test-session"`) {
+		t.Fatalf("approved = %d %s", approved.Code, approved.Body.String())
+	}
+	if got := request(http.MethodPost, "/v1/auth/telegram/restore", `{"recovery_ticket":"test"}`).Code; got != http.StatusOK {
+		t.Fatalf("restore = %d", got)
+	}
+	missing := newHandler(fakeDatabase{}, nil, nil, nil)
+	w := httptest.NewRecorder()
+	missing.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/auth/telegram/start", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured Telegram = %d", w.Code)
 	}
 }

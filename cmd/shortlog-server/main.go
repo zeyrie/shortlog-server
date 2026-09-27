@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -74,10 +75,29 @@ func run() error {
 			return errors.New("SMTP_HOST, SMTP_PORT=465, SMTP_USER, and SMTP_FROM are required when SMTP_PASSWORD is set")
 		}
 	}
+	var telegram *auth.TelegramLogin
+	clientID, clientSecret := os.Getenv("TELEGRAM_CLIENT_ID"), os.Getenv("TELEGRAM_CLIENT_SECRET")
+	redirect := os.Getenv("TELEGRAM_REDIRECT_URI")
+	telegramKey := os.Getenv("TELEGRAM_ENCRYPTION_KEY")
+	if clientID != "" || clientSecret != "" || redirect != "" || telegramKey != "" {
+		key, err := hex.DecodeString(telegramKey)
+		callback, parseErr := url.Parse(redirect)
+		if err != nil || len(key) != 32 || parseErr != nil || callback.Scheme != "https" || callback.Host == "" || callback.Path != "/v1/auth/telegram/callback" || callback.RawQuery != "" || callback.Fragment != "" {
+			return errors.New("Telegram login requires a 32-byte TELEGRAM_ENCRYPTION_KEY and an HTTPS TELEGRAM_REDIRECT_URI ending in /v1/auth/telegram/callback")
+		}
+		initCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		telegram, err = auth.NewTelegramLogin(initCtx, service, auth.TelegramConfig{
+			ClientID: clientID, ClientSecret: clientSecret, RedirectURI: redirect, EncryptionKey: key,
+		})
+		if err != nil {
+			return err
+		}
+	}
 
 	server := &http.Server{
 		Addr:              address,
-		Handler:           newHandler(pool, service, auth.NewEmailLogin(service, sender, key)),
+		Handler:           newHandler(pool, service, auth.NewEmailLogin(service, sender, key), telegram),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
