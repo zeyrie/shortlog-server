@@ -276,3 +276,70 @@ func (s *Service) RevokeSession(ctx context.Context, accountID, sessionID pgtype
 func (s *Service) RevokeAllSessions(ctx context.Context, accountID pgtype.UUID) (int64, error) {
 	return s.queries.RevokeAllSessions(ctx, accountID)
 }
+
+// RequestDeletion starts the recovery window and revokes every device in the
+// same transaction. Existing sessions cannot be used while deletion is pending.
+func (s *Service) RequestDeletion(ctx context.Context, accountID pgtype.UUID) (time.Time, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	requested, err := queries.RequestAccountDeletion(ctx, accountID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, ErrAccountUnavailable
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if _, err := queries.RevokeAllSessions(ctx, accountID); err != nil {
+		return time.Time{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return time.Time{}, err
+	}
+	return requested.Time.Add(30 * 24 * time.Hour), nil
+}
+
+// PurgeExpiredAccounts deletes up to limit expired accounts per invocation.
+// Call from a scheduled job; never purge on ordinary server startup. Row locks
+// serialize erasure against a concurrent restoration.
+func (s *Service) PurgeExpiredAccounts(ctx context.Context, limit int) (int, error) {
+	if limit < 1 || limit > 100 {
+		return 0, errors.New("invalid purge batch size")
+	}
+	for purged := 0; purged < limit; purged++ {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return purged, err
+		}
+		queries := s.queries.WithTx(tx)
+		id, err := queries.LockExpiredAccount(ctx)
+		if errors.Is(err, pgx.ErrNoRows) {
+			_ = tx.Rollback(ctx)
+			return purged, nil
+		}
+		if err == nil {
+			err = queries.DeleteAccountEmailChallenges(ctx, id)
+		}
+		if err == nil {
+			err = queries.DeleteAccountTelegramAttempts(ctx, id)
+		}
+		var count int64
+		if err == nil {
+			count, err = queries.PurgeExpiredAccount(ctx, id)
+		}
+		if err == nil && count != 1 {
+			err = errors.New("expired account disappeared during purge")
+		}
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return purged, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return purged, err
+		}
+	}
+	return limit, nil
+}

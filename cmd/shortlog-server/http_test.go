@@ -51,6 +51,9 @@ func (fakeSessions) RevokeAllSessions(context.Context, pgtype.UUID) (int64, erro
 func (fakeSessions) UpdateProfile(context.Context, pgtype.UUID, auth.NewAccountProfile) (db.Account, error) {
 	return db.Account{}, nil
 }
+func (fakeSessions) RequestDeletion(context.Context, pgtype.UUID) (time.Time, error) {
+	return time.Time{}, nil
+}
 
 func TestAPIErrorResponses(t *testing.T) {
 	handler := newHandler(fakeDatabase{err: errors.New("database secret")}, fakeSessions{err: errors.New("session secret")}, nil, nil, nil, nil)
@@ -229,6 +232,24 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	}
 	if got := request(http.MethodGet, "/v1/me", otherToken).Code; got != http.StatusOK {
 		t.Fatalf("other device after logout /me status = %d", got)
+	}
+	deletion := request(http.MethodDelete, "/v1/me", otherToken)
+	var scheduled struct {
+		DeletionScheduledFor time.Time `json:"deletion_scheduled_for"`
+	}
+	if deletion.Code != http.StatusAccepted || json.Unmarshal(deletion.Body.Bytes(), &scheduled) != nil ||
+		scheduled.DeletionScheduledFor.Before(time.Now().Add(29*24*time.Hour)) {
+		t.Fatalf("delete /me = %d %s", deletion.Code, deletion.Body.String())
+	}
+	if got := request(http.MethodGet, "/v1/me", otherToken).Code; got != http.StatusUnauthorized {
+		t.Fatalf("deleted account /me status = %d", got)
+	}
+	if got := request(http.MethodDelete, "/v1/me", otherToken).Code; got != http.StatusUnauthorized {
+		t.Fatalf("repeated deletion status = %d", got)
+	}
+	var pending bool
+	if err := pool.QueryRow(ctx, "SELECT deletion_requested_at IS NOT NULL FROM accounts WHERE id=$1", account.ID).Scan(&pending); err != nil || !pending {
+		t.Fatalf("account not retained for recovery: %v", err)
 	}
 }
 

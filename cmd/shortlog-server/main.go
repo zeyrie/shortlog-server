@@ -59,6 +59,12 @@ func run() error {
 	if err := pool.Ping(connectCtx); err != nil {
 		return errors.New("cannot connect to database")
 	}
+	if len(os.Args) > 1 {
+		if len(os.Args) != 2 || os.Args[1] != "purge-expired-accounts" {
+			return errors.New("usage: shortlog-server [purge-expired-accounts]")
+		}
+		return purgeExpiredAccounts(ctx, auth.New(pool))
+	}
 
 	service := auth.New(pool)
 
@@ -123,6 +129,24 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+func purgeExpiredAccounts(ctx context.Context, service *auth.Service) error {
+	total := 0
+	for {
+		batchCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		count, err := service.PurgeExpiredAccounts(batchCtx, 100)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("purge expired accounts after %d: %w", total, err)
+		}
+		total += count
+		if count < 100 {
+			break
+		}
+	}
+	slog.Info("expired account purge complete", "accounts", total)
+	return nil
 }
 
 func loadLocalEnv(path string) error {

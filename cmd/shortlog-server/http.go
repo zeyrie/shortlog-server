@@ -27,6 +27,7 @@ type sessionManager interface {
 	RevokeSession(context.Context, pgtype.UUID, pgtype.UUID) (bool, error)
 	RevokeAllSessions(context.Context, pgtype.UUID) (int64, error)
 	UpdateProfile(context.Context, pgtype.UUID, auth.NewAccountProfile) (db.Account, error)
+	RequestDeletion(context.Context, pgtype.UUID) (time.Time, error)
 }
 
 type emailLogin interface {
@@ -356,6 +357,21 @@ func newHandler(db databasePinger, sessions sessionManager, email emailLogin, te
 	})))
 
 	mux.HandleFunc("/v1/me", onlyMethods(withSession(sessions, func(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+		if r.Method == http.MethodDelete {
+			deadline, err := sessions.RequestDeletion(r.Context(), p.AccountID)
+			if errors.Is(err, auth.ErrAccountUnavailable) {
+				apierror.Write(w, apierror.Unauthorized)
+				return
+			}
+			if err != nil {
+				serverError(w, r, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, struct {
+				DeletionScheduledFor time.Time `json:"deletion_scheduled_for"`
+			}{deadline})
+			return
+		}
 		if r.Method == http.MethodPatch {
 			var input struct {
 				Username string `json:"username"`
@@ -379,7 +395,7 @@ func newHandler(db databasePinger, sessions sessionManager, email emailLogin, te
 			return
 		}
 		writeMe(w, p.AccountID, p.Username, p.TimeZone, p.AccountCreated.Time)
-	}), http.MethodGet, http.MethodPatch))
+	}), http.MethodGet, http.MethodPatch, http.MethodDelete))
 
 	mux.HandleFunc("/v1/sessions", onlyMethod(http.MethodGet, withSession(sessions, func(w http.ResponseWriter, r *http.Request, p auth.Principal) {
 		rows, err := sessions.ListSessions(r.Context(), p.AccountID)

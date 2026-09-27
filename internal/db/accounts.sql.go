@@ -34,6 +34,26 @@ func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (A
 	return i, err
 }
 
+const deleteAccountEmailChallenges = `-- name: DeleteAccountEmailChallenges :exec
+DELETE FROM email_login_challenges
+WHERE email IN (SELECT subject FROM login_identities WHERE account_id = $1 AND provider = 'email')
+`
+
+func (q *Queries) DeleteAccountEmailChallenges(ctx context.Context, accountID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAccountEmailChallenges, accountID)
+	return err
+}
+
+const deleteAccountTelegramAttempts = `-- name: DeleteAccountTelegramAttempts :exec
+DELETE FROM telegram_login_attempts
+WHERE telegram_subject IN (SELECT subject FROM login_identities WHERE account_id = $1 AND provider = 'telegram')
+`
+
+func (q *Queries) DeleteAccountTelegramAttempts(ctx context.Context, accountID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAccountTelegramAttempts, accountID)
+	return err
+}
+
 const getAccount = `-- name: GetAccount :one
 SELECT id, username, time_zone, created_at, deletion_requested_at
 FROM accounts
@@ -51,6 +71,45 @@ func (q *Queries) GetAccount(ctx context.Context, id pgtype.UUID) (Account, erro
 		&i.DeletionRequestedAt,
 	)
 	return i, err
+}
+
+const lockExpiredAccount = `-- name: LockExpiredAccount :one
+SELECT id FROM accounts
+WHERE deletion_requested_at <= now() - interval '30 days'
+ORDER BY deletion_requested_at, id
+LIMIT 1 FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) LockExpiredAccount(ctx context.Context) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockExpiredAccount)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const purgeExpiredAccount = `-- name: PurgeExpiredAccount :execrows
+DELETE FROM accounts WHERE id = $1 AND deletion_requested_at <= now() - interval '30 days'
+`
+
+func (q *Queries) PurgeExpiredAccount(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeExpiredAccount, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const requestAccountDeletion = `-- name: RequestAccountDeletion :one
+UPDATE accounts SET deletion_requested_at = now()
+WHERE id = $1 AND deletion_requested_at IS NULL
+RETURNING deletion_requested_at
+`
+
+func (q *Queries) RequestAccountDeletion(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, requestAccountDeletion, id)
+	var deletion_requested_at pgtype.Timestamptz
+	err := row.Scan(&deletion_requested_at)
+	return deletion_requested_at, err
 }
 
 const updateAccountProfile = `-- name: UpdateAccountProfile :one

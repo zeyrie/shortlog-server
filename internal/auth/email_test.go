@@ -116,8 +116,11 @@ func TestEmailLoginPostgres(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM login_identities WHERE provider='email' AND subject=$1", email).Scan(&identityCount); err != nil || identityCount != 1 {
 		t.Fatalf("email identity count = %d, error = %v", identityCount, err)
 	}
-	if _, err := pool.Exec(ctx, "UPDATE accounts SET deletion_requested_at=now() WHERE id=$1", account.ID); err != nil {
+	if _, err := svc.RequestDeletion(ctx, account.ID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := svc.Authenticate(ctx, repeatToken); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("other device not revoked: %v", err)
 	}
 	thirdID, err := login.Start(ctx, email, "192.0.2.13")
 	if err != nil {
