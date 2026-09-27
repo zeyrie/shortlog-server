@@ -62,7 +62,7 @@ func TestProjectRoutesPostgres(t *testing.T) {
 	owner := newAccount()
 	other := newAccount()
 	token, otherToken := newToken(owner), newToken(other)
-	handler := newHandler(pool, auth.New(pool), nil, nil, projects.New(pool))
+	handler := newHandler(pool, auth.New(pool), nil, nil, projects.New(pool), nil)
 	request := func(method, path, bearer, body string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, path, strings.NewReader(body))

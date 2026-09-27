@@ -42,10 +42,13 @@ type telegramLogin interface {
 	Restore(context.Context, string, string) (string, error)
 }
 
-func newHandler(db databasePinger, sessions sessionManager, email emailLogin, telegram telegramLogin, projects projectManager) http.Handler {
+func newHandler(db databasePinger, sessions sessionManager, email emailLogin, telegram telegramLogin, projects projectManager, noteStore noteManager) http.Handler {
 	mux := http.NewServeMux()
 	if projects != nil {
 		registerProjectRoutes(mux, sessions, projects)
+	}
+	if noteStore != nil {
+		registerNoteRoutes(mux, sessions, noteStore)
 	}
 
 	mux.HandleFunc("/healthz", onlyMethod(http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {

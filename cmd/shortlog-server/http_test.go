@@ -53,7 +53,7 @@ func (fakeSessions) UpdateProfile(context.Context, pgtype.UUID, auth.NewAccountP
 }
 
 func TestAPIErrorResponses(t *testing.T) {
-	handler := newHandler(fakeDatabase{err: errors.New("database secret")}, fakeSessions{err: errors.New("session secret")}, nil, nil, nil)
+	handler := newHandler(fakeDatabase{err: errors.New("database secret")}, fakeSessions{err: errors.New("session secret")}, nil, nil, nil, nil)
 	for _, tc := range []struct {
 		name, method, path, authorization string
 		status                            int
@@ -92,7 +92,7 @@ func TestAPIErrorResponses(t *testing.T) {
 }
 
 func TestProtectedRequestDeadline(t *testing.T) {
-	handler := newHandler(fakeDatabase{}, fakeSessions{waitForCancel: true}, nil, nil, nil)
+	handler := newHandler(fakeDatabase{}, fakeSessions{waitForCancel: true}, nil, nil, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	r := httptest.NewRequest(http.MethodGet, "/v1/me", nil).WithContext(ctx)
@@ -106,7 +106,7 @@ func TestProtectedRequestDeadline(t *testing.T) {
 
 func TestHealth(t *testing.T) {
 	response := httptest.NewRecorder()
-	newHandler(fakeDatabase{err: errors.New("offline")}, nil, nil, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	newHandler(fakeDatabase{err: errors.New("offline")}, nil, nil, nil, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -150,7 +150,7 @@ func TestProtectedRoutesPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(pool, svc, nil, nil, nil)
+	handler := newHandler(pool, svc, nil, nil, nil, nil)
 	request := func(method, path, bearer string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, path, nil)
@@ -243,7 +243,7 @@ func TestReady(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			newHandler(fakeDatabase{err: test.err}, nil, nil, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			newHandler(fakeDatabase{err: test.err}, nil, nil, nil, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 			if response.Code != test.want {
 				t.Fatalf("ready status = %d, want %d", response.Code, test.want)
 			}
@@ -272,7 +272,7 @@ func TestEmailHTTPPostgres(t *testing.T) {
 	if _, err := rand.Read(key); err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(pool, svc, auth.NewEmailLogin(svc, sender, key), nil, nil)
+	handler := newHandler(pool, svc, auth.NewEmailLogin(svc, sender, key), nil, nil, nil)
 	email := hex.EncodeToString(key[:8]) + "@example.org"
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -351,7 +351,7 @@ func TestTelegramHTTP(t *testing.T) {
 	if err := id.Scan("94bc4842-25b9-4c54-8c9d-47a9050e620c"); err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(fakeDatabase{}, nil, nil, fakeTelegram{id: id}, nil)
+	handler := newHandler(fakeDatabase{}, nil, nil, fakeTelegram{id: id}, nil, nil)
 	request := func(method, path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		w := httptest.NewRecorder()
@@ -385,7 +385,7 @@ func TestTelegramHTTP(t *testing.T) {
 	if got := request(http.MethodPost, "/v1/auth/telegram/restore", `{"recovery_ticket":"test"}`).Code; got != http.StatusOK {
 		t.Fatalf("restore = %d", got)
 	}
-	missing := newHandler(fakeDatabase{}, nil, nil, nil, nil)
+	missing := newHandler(fakeDatabase{}, nil, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	missing.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/auth/telegram/start", nil))
 	if w.Code != http.StatusServiceUnavailable {
