@@ -2,14 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"shortlog-server/internal/auth"
+	"shortlog-server/internal/mail"
+	"shortlog-server/internal/notes"
+	"shortlog-server/internal/projects"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -51,11 +59,57 @@ func run() error {
 	if err := pool.Ping(connectCtx); err != nil {
 		return errors.New("cannot connect to database")
 	}
+	if len(os.Args) > 1 {
+		if len(os.Args) != 2 || os.Args[1] != "purge-expired-accounts" {
+			return errors.New("usage: shortlog-server [purge-expired-accounts]")
+		}
+		return purgeExpiredAccounts(ctx, auth.New(pool))
+	}
+
+	service := auth.New(pool)
+
+	key, err := hex.DecodeString(os.Getenv("EMAIL_OTP_KEY"))
+	if err != nil || len(key) != 32 {
+		return errors.New("EMAIL_OTP_KEY must be 32 random bytes encoded as 64 hex characters")
+	}
+
+	password := os.Getenv("SMTP_PASSWORD")
+	var sender auth.CodeSender
+
+	if password != "" {
+		sender = mail.SMTP{Address: net.JoinHostPort(os.Getenv("SMTP_HOST"), os.Getenv("SMTP_PORT")),
+			Username: os.Getenv("SMTP_USER"), From: os.Getenv("SMTP_FROM"), Password: password}
+		if os.Getenv("SMTP_HOST") == "" || os.Getenv("SMTP_PORT") != "465" || os.Getenv("SMTP_USER") == "" || os.Getenv("SMTP_FROM") == "" {
+			return errors.New("SMTP_HOST, SMTP_PORT=465, SMTP_USER, and SMTP_FROM are required when SMTP_PASSWORD is set")
+		}
+	}
+	var telegram *auth.TelegramLogin
+	clientID, clientSecret := os.Getenv("TELEGRAM_CLIENT_ID"), os.Getenv("TELEGRAM_CLIENT_SECRET")
+	redirect := os.Getenv("TELEGRAM_REDIRECT_URI")
+	telegramKey := os.Getenv("TELEGRAM_ENCRYPTION_KEY")
+	if clientID != "" || clientSecret != "" || redirect != "" || telegramKey != "" {
+		key, err := hex.DecodeString(telegramKey)
+		callback, parseErr := url.Parse(redirect)
+		if err != nil || len(key) != 32 || parseErr != nil || callback.Scheme != "https" || callback.Host == "" || callback.Path != "/v1/auth/telegram/callback" || callback.RawQuery != "" || callback.Fragment != "" {
+			return errors.New("Telegram login requires a 32-byte TELEGRAM_ENCRYPTION_KEY and an HTTPS TELEGRAM_REDIRECT_URI ending in /v1/auth/telegram/callback")
+		}
+		initCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		telegram, err = auth.NewTelegramLogin(initCtx, service, auth.TelegramConfig{
+			ClientID: clientID, ClientSecret: clientSecret, RedirectURI: redirect, EncryptionKey: key,
+		})
+		if err != nil {
+			return err
+		}
+	}
 
 	server := &http.Server{
 		Addr:              address,
-		Handler:           newHandler(pool),
+		Handler:           newHandler(pool, service, auth.NewEmailLogin(service, sender, key), telegram, projects.New(pool), notes.New(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	result := make(chan error, 1)
@@ -75,6 +129,24 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+func purgeExpiredAccounts(ctx context.Context, service *auth.Service) error {
+	total := 0
+	for {
+		batchCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		count, err := service.PurgeExpiredAccounts(batchCtx, 100)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("purge expired accounts after %d: %w", total, err)
+		}
+		total += count
+		if count < 100 {
+			break
+		}
+	}
+	slog.Info("expired account purge complete", "accounts", total)
+	return nil
 }
 
 func loadLocalEnv(path string) error {

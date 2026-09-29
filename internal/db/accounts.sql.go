@@ -12,19 +12,50 @@ import (
 )
 
 const createAccount = `-- name: CreateAccount :one
-INSERT INTO accounts DEFAULT VALUES
-RETURNING id, time_zone, created_at
+INSERT INTO accounts (username, time_zone) VALUES ($1, $2)
+RETURNING id, username, time_zone, created_at, deletion_requested_at
 `
 
-func (q *Queries) CreateAccount(ctx context.Context) (Account, error) {
-	row := q.db.QueryRow(ctx, createAccount)
+type CreateAccountParams struct {
+	Username string
+	TimeZone string
+}
+
+func (q *Queries) CreateAccount(ctx context.Context, arg CreateAccountParams) (Account, error) {
+	row := q.db.QueryRow(ctx, createAccount, arg.Username, arg.TimeZone)
 	var i Account
-	err := row.Scan(&i.ID, &i.TimeZone, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.TimeZone,
+		&i.CreatedAt,
+		&i.DeletionRequestedAt,
+	)
 	return i, err
 }
 
+const deleteAccountEmailChallenges = `-- name: DeleteAccountEmailChallenges :exec
+DELETE FROM email_login_challenges
+WHERE email IN (SELECT subject FROM login_identities WHERE account_id = $1 AND provider = 'email')
+`
+
+func (q *Queries) DeleteAccountEmailChallenges(ctx context.Context, accountID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAccountEmailChallenges, accountID)
+	return err
+}
+
+const deleteAccountTelegramAttempts = `-- name: DeleteAccountTelegramAttempts :exec
+DELETE FROM telegram_login_attempts
+WHERE telegram_subject IN (SELECT subject FROM login_identities WHERE account_id = $1 AND provider = 'telegram')
+`
+
+func (q *Queries) DeleteAccountTelegramAttempts(ctx context.Context, accountID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAccountTelegramAttempts, accountID)
+	return err
+}
+
 const getAccount = `-- name: GetAccount :one
-SELECT id, time_zone, created_at
+SELECT id, username, time_zone, created_at, deletion_requested_at
 FROM accounts
 WHERE id = $1
 `
@@ -32,6 +63,76 @@ WHERE id = $1
 func (q *Queries) GetAccount(ctx context.Context, id pgtype.UUID) (Account, error) {
 	row := q.db.QueryRow(ctx, getAccount, id)
 	var i Account
-	err := row.Scan(&i.ID, &i.TimeZone, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.TimeZone,
+		&i.CreatedAt,
+		&i.DeletionRequestedAt,
+	)
+	return i, err
+}
+
+const lockExpiredAccount = `-- name: LockExpiredAccount :one
+SELECT id FROM accounts
+WHERE deletion_requested_at <= now() - interval '30 days'
+ORDER BY deletion_requested_at, id
+LIMIT 1 FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) LockExpiredAccount(ctx context.Context) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockExpiredAccount)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const purgeExpiredAccount = `-- name: PurgeExpiredAccount :execrows
+DELETE FROM accounts WHERE id = $1 AND deletion_requested_at <= now() - interval '30 days'
+`
+
+func (q *Queries) PurgeExpiredAccount(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeExpiredAccount, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const requestAccountDeletion = `-- name: RequestAccountDeletion :one
+UPDATE accounts SET deletion_requested_at = now()
+WHERE id = $1 AND deletion_requested_at IS NULL
+RETURNING deletion_requested_at
+`
+
+func (q *Queries) RequestAccountDeletion(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, requestAccountDeletion, id)
+	var deletion_requested_at pgtype.Timestamptz
+	err := row.Scan(&deletion_requested_at)
+	return deletion_requested_at, err
+}
+
+const updateAccountProfile = `-- name: UpdateAccountProfile :one
+UPDATE accounts SET username = $2, time_zone = $3
+WHERE id = $1 AND deletion_requested_at IS NULL
+RETURNING id, username, time_zone, created_at, deletion_requested_at
+`
+
+type UpdateAccountProfileParams struct {
+	ID       pgtype.UUID
+	Username string
+	TimeZone string
+}
+
+func (q *Queries) UpdateAccountProfile(ctx context.Context, arg UpdateAccountProfileParams) (Account, error) {
+	row := q.db.QueryRow(ctx, updateAccountProfile, arg.ID, arg.Username, arg.TimeZone)
+	var i Account
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.TimeZone,
+		&i.CreatedAt,
+		&i.DeletionRequestedAt,
+	)
 	return i, err
 }

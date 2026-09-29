@@ -9,7 +9,86 @@ import (
 )
 
 type Account struct {
+	ID                  pgtype.UUID
+	Username            string
+	TimeZone            string
+	CreatedAt           pgtype.Timestamptz
+	DeletionRequestedAt pgtype.Timestamptz
+}
+
+type AuthRateLimit struct {
+	Key          []byte
+	WindowStart  pgtype.Timestamptz
+	RequestCount int32
+}
+
+type EmailLoginChallenge struct {
+	ID                   pgtype.UUID
+	Email                string
+	Purpose              string
+	InitiatedBySessionID pgtype.UUID
+	CodeMac              []byte
+	AttemptCount         int16
+	CreatedAt            pgtype.Timestamptz
+	ExpiresAt            pgtype.Timestamptz
+	SentAt               pgtype.Timestamptz
+	VerifiedAt           pgtype.Timestamptz
+	CompletionTokenHash  []byte
+	CompletedAt          pgtype.Timestamptz
+}
+
+type LoginIdentity struct {
 	ID        pgtype.UUID
-	TimeZone  string
+	AccountID pgtype.UUID
+	Provider  string
+	Subject   string
+	LinkedAt  pgtype.Timestamptz
+}
+
+type Note struct {
+	ID        pgtype.UUID
+	AccountID pgtype.UUID
+	ProjectID pgtype.UUID
+	Content   string
 	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+type Project struct {
+	ID          pgtype.UUID
+	AccountID   pgtype.UUID
+	Name        string
+	Description pgtype.Text
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+}
+
+type Session struct {
+	ID              pgtype.UUID
+	AccountID       pgtype.UUID
+	TokenHash       []byte
+	UserAgent       string
+	DeviceLabel     string
+	CreatedAt       pgtype.Timestamptz
+	LastUsedAt      pgtype.Timestamptz
+	AuthenticatedAt pgtype.Timestamptz
+	RevokedAt       pgtype.Timestamptz
+}
+
+type TelegramLoginAttempt struct {
+	ID                     pgtype.UUID
+	StateHash              []byte
+	PkceVerifierCiphertext []byte
+	Nonce                  string
+	PollSecretHash         []byte
+	Purpose                string
+	InitiatedBySessionID   pgtype.UUID
+	TelegramSubject        pgtype.Text
+	CreatedAt              pgtype.Timestamptz
+	ExpiresAt              pgtype.Timestamptz
+	ApprovedAt             pgtype.Timestamptz
+	CompletedAt            pgtype.Timestamptz
+	CallbackClaimedAt      pgtype.Timestamptz
+	RecoveryTicketHash     []byte
 }
