@@ -57,7 +57,8 @@ func run() error {
 	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := pool.Ping(connectCtx); err != nil {
-		return errors.New("cannot connect to database")
+		// pgconn redacts the password from connection errors.
+		return fmt.Errorf("cannot connect to database: %w", err)
 	}
 	if len(os.Args) > 1 {
 		if len(os.Args) == 2 && os.Args[1] == "migrate" {
