@@ -49,7 +49,7 @@ To debug directly in GoLand, use a **Go Build** run/debug configuration with:
 
 Use GoLand's **Debug** action; no program arguments are needed. A supplied `DATABASE_URL` takes priority over `.env`. Run `task --list` to see the available commands. Check `http://127.0.0.1:8080/healthz` for process health or `/readyz` for database readiness. Stop the development database with `container stop shortlog-postgres` and resume it with `container start shortlog-postgres`.
 
-Run tests with `task test`. Migrations run as an explicit step; the API does not run them on startup.
+Run tests with `task test`. Migrations are embedded in the binary and applied by `shortlog-server migrate` (what `task db:migrate` runs); the server itself does not run them on startup. A Postgres advisory lock prevents concurrent runs.
 
 Run `task test:db` for database-backed authentication and HTTP tests. It uses only the known local PostgreSQL URL; tests create their own accounts and remove them afterward.
 
@@ -57,7 +57,7 @@ To start over during early development, run `task db:reset`. After confirmation 
 
 ## Production environment
 
-Set `APP_ENV=production`, `DATABASE_URL`, and `HTTP_ADDR=:8080` in Dokploy's environment/secret settings. Production does not use an env file. `APP_ENV=production` disables local `.env` loading; `.dockerignore` also excludes env files from container build contexts. Keep PostgreSQL credentials out of Git and do not reuse the local development password. TLS termination and production database access still need to be configured.
+Dokploy builds the root `Dockerfile` (Build Type: **Dockerfile**, port 8080). The container runs `shortlog-server migrate` and then starts the server; if a migration fails, the new container does not start. Set `DATABASE_URL` and the other secrets from `.env.example` in Dokploy's environment settings; the image already sets `APP_ENV=production` and `HTTP_ADDR=:8080`. Production does not use an env file. `APP_ENV=production` disables local `.env` loading; `.dockerignore` also excludes env files from container build contexts. Keep PostgreSQL credentials out of Git and do not reuse the local development password. TLS termination and production database access still need to be configured.
 
 ## Scope
 

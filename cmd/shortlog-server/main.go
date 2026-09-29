@@ -60,8 +60,11 @@ func run() error {
 		return errors.New("cannot connect to database")
 	}
 	if len(os.Args) > 1 {
+		if len(os.Args) == 2 && os.Args[1] == "migrate" {
+			return migrate(ctx, pool)
+		}
 		if len(os.Args) != 2 || os.Args[1] != "purge-expired-accounts" {
-			return errors.New("usage: shortlog-server [purge-expired-accounts]")
+			return errors.New("usage: shortlog-server [migrate | purge-expired-accounts]")
 		}
 		return purgeExpiredAccounts(ctx, auth.New(pool))
 	}
